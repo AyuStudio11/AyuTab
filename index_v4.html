@@ -1,0 +1,3725 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ayu Tab</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Lucide 图标库 -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;600&display=swap');
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            background-color: #000;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* 极致毛玻璃效果 - 增加了饱和度和模糊度，更有苹果味 */
+        /* 毛玻璃效果：blur 半径与面板 gap 的关系决定了兄弟采样污染程度。
+           blur 35px + gap 32px 时，相邻面板会被采样到边缘 → hover 重绘时出现"白/蓝框"伪影。
+           选择 blur 20px（< gap 32px），物理上切断跨面板采样。 */
+        .apple-glass {
+            background-color: rgba(255, 255, 255, 0.12);
+            background-clip: padding-box;
+            backdrop-filter: blur(24px) saturate(200%);
+            -webkit-backdrop-filter: blur(24px) saturate(200%);
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+                0 15px 50px -10px rgba(0, 0, 0, 0.4);
+        }
+        /* 外层分组做 stacking context 隔离顶栏与面板区 */
+        .glass-group {
+            isolation: isolate;
+            position: relative;
+        }
+        /* 下拉淡入时让 transform 常驻 GPU 合成层，subpixel 位置不 snap → 消除过渡结束瞬间第一行文字的跳动。
+           选择器匹配所有带 opacity-0 类的 apple-glass（即顶栏下拉），不影响主面板。
+           只用 transform，不用 backdrop-filter，避免断开 backdrop 采样。 */
+        .apple-glass[class*="opacity-0"] {
+            will-change: transform;
+        }
+
+        /* 背景层 */
+        #bg-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image: url('https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&q=80&w=2560');
+            background-size: cover; 
+            background-position: center;
+            z-index: -2; 
+        }
+
+        .modal {
+            display: none; position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            align-items: center; justify-content: center; z-index: 100;
+            pointer-events: none; /* 允许穿透空白区域点击 */
+        }
+        .modal.active { display: flex; }
+        .modal > * { pointer-events: auto; }
+        /* 仅让弹出的面板带深色半透明底，页面其余区域不遮罩 */
+        .modal .apple-glass {
+            background: rgba(0, 0, 0, 0.55);
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+                0 15px 50px -10px rgba(0, 0, 0, 0.4);
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        
+        .hover-lift { transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .hover-lift:hover { transform: translateY(-8px); filter: brightness(1.2); }
+
+        /* 番茄钟时长按钮 */
+        .pomo-dur-btn { opacity: 0.5; }
+        .pomo-dur-btn.active { opacity: 1; background: rgba(255,255,255,0.15); }
+
+        /* 宠物 PNG 容器 */
+        .pet-wrap { width: 120px; height: 120px; display: inline-block; cursor: pointer; user-select: none; position: relative; --flip: 1; }
+        .pet-img { width: 100%; height: 100%; display: block; pointer-events: none; user-select: none; opacity: 1; transition: opacity 0.08s ease; background: transparent; -webkit-user-drag: none; object-fit: contain; transform: scaleX(var(--flip)); }
+        .pet-wrap.facing-left { --flip: -1; }
+
+        /* 各状态 keyframe 动画 —— 动画里复用 scaleX(var(--flip)) 以同时兼容镜像 */
+        @keyframes petStateIdle {
+            0%, 100% { transform: translateY(0) scaleX(var(--flip)); }
+            50% { transform: translateY(-4px) scaleX(var(--flip)); }
+        }
+        @keyframes petStateHappy {
+            0%, 100% { transform: translateY(0) scaleX(var(--flip)); }
+            50% { transform: translateY(-8px) scaleX(var(--flip)); }
+        }
+        @keyframes petStateCelebrate {
+            0%, 100% { transform: translateY(0) scaleX(var(--flip)); }
+            40% { transform: translateY(-16px) scaleX(var(--flip)); }
+            60% { transform: translateY(-12px) scaleX(var(--flip)); }
+        }
+        @keyframes petStateSad {
+            0%, 100% { transform: translateX(0) scaleX(var(--flip)); }
+            25% { transform: translateX(-2px) scaleX(var(--flip)); }
+            75% { transform: translateX(2px) scaleX(var(--flip)); }
+        }
+        @keyframes petStateSleeping {
+            /* 呼吸感：scale 0.97 ↔ 1.0，周期 4s */
+            0%, 100% { transform: scale(1) scaleX(var(--flip)); }
+            50% { transform: scale(0.97) scaleX(var(--flip)); }
+        }
+        @keyframes petWakeShake {
+            0%, 100% { transform: translateX(0)   scaleX(var(--flip)); }
+            20%      { transform: translateX(-4px) scaleX(var(--flip)); }
+            40%      { transform: translateX( 4px) scaleX(var(--flip)); }
+            60%      { transform: translateX(-4px) scaleX(var(--flip)); }
+            80%      { transform: translateX( 4px) scaleX(var(--flip)); }
+        }
+        @keyframes petWakePop {
+            0%   { transform: scale(0.8) scaleX(var(--flip)); }
+            60%  { transform: scale(1.1) scaleX(var(--flip)); }
+            100% { transform: scale(1)   scaleX(var(--flip)); }
+        }
+        .pet-wrap.state-idle      .pet-img { animation: petStateIdle 3s ease-in-out infinite; }
+        .pet-wrap.state-happy     .pet-img { animation: petStateHappy 0.5s ease-in-out 2; }
+        .pet-wrap.state-celebrate .pet-img { animation: petStateCelebrate 0.5s ease-in-out 3; }
+        .pet-wrap.state-sad       .pet-img { animation: petStateSad 4s ease-in-out infinite; }
+        .pet-wrap.state-sleeping  .pet-img { animation: petStateSleeping 4s ease-in-out infinite; }
+        .pet-wrap.state-yawning   .pet-img { animation: petStateIdle 3s ease-in-out infinite; }
+        .pet-wrap.waking-shake    .pet-img { animation: petWakeShake 0.3s ease-in-out !important; }
+        .pet-wrap.waking-pop      .pet-img { animation: petWakePop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) !important; }
+        /* dragged 状态无 keyframe —— 位置由 JS pointermove 设置 left/top 直接跟随光标 */
+
+        /* 投喂食物图标 */
+        .pet-food { position: absolute; left: 50%; bottom: -4px; transform: translateX(-50%); width: 18px; height: 18px; opacity: 0; pointer-events: none; z-index: 4; }
+        .pet-food.show { animation: petFoodPop 1.5s ease-out forwards; }
+        @keyframes petFoodPop {
+            0% { opacity: 0; transform: translate(-50%, 8px) scale(0.6); }
+            20% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+            70% { opacity: 1; transform: translate(-50%, -2px) scale(0.95); }
+            100% { opacity: 0; transform: translate(-50%, -10px) scale(0.4); }
+        }
+
+        /* 拖拽 */
+        .pet-wrap.dragging { transition: none !important; cursor: grabbing; z-index: 9999; }
+        /* 用 absolute 而非 fixed，避免被祖先 backdrop-filter / transform 劫持为包含块导致拖拽时定位错乱 */
+        .pet-wrap.pinned { position: absolute !important; z-index: 9998; }
+        .pet-wrap { transition: left 4.8s cubic-bezier(0.45, 0, 0.25, 1), top 4.8s cubic-bezier(0.45, 0, 0.25, 1); }
+        .pet-onboard-card.selected { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.4); transform: translateY(-2px); }
+        .pet-onboard-svg img { width: 100%; height: 100%; display: block; object-fit: contain; }
+
+        /* 心情指示条 */
+        .pet-mood { position: absolute; top: 4px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; opacity: 0; transition: opacity 0.5s ease; pointer-events: none; z-index: 5; }
+        .pet-mood.show { opacity: 1; }
+        .pet-mood .mood-heart { width: 12px; height: 12px; color: #f472b6; }
+        .pet-mood .mood-heart.empty { color: rgba(244, 114, 182, 0.25); }
+
+        /* 心情指示装饰（星星 / 乌云） */
+        .pet-mood-fx { position: absolute; left: 50%; top: -6px; transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 0.8s ease; z-index: 4; width: 80px; height: 40px; }
+        .pet-mood-fx.show { opacity: 1; }
+        .pet-mood-fx .fx-star { position: absolute; width: 12px; height: 12px; color: #fde68a; opacity: 0; animation: fxStar 2.4s ease-in-out infinite; }
+        .pet-mood-fx .fx-star:nth-child(1) { left: 8px;  top: 8px;  animation-delay: 0s; }
+        .pet-mood-fx .fx-star:nth-child(2) { left: 34px; top: 0px;  animation-delay: 0.7s; }
+        .pet-mood-fx .fx-star:nth-child(3) { left: 60px; top: 10px; animation-delay: 1.4s; }
+        @keyframes fxStar {
+            0% { opacity: 0; transform: scale(0.4) translateY(4px); }
+            30% { opacity: 1; transform: scale(1) translateY(-2px); }
+            70% { opacity: 1; transform: scale(1) translateY(-6px); }
+            100% { opacity: 0; transform: scale(0.6) translateY(-12px); }
+        }
+        .pet-mood-fx .fx-cloud { position: absolute; left: 50%; top: 4px; transform: translateX(-50%); width: 36px; height: 22px; color: rgba(180, 200, 220, 0.85); animation: fxCloudFloat 4.5s ease-in-out infinite; }
+        @keyframes fxCloudFloat {
+            0%,100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-46%) translateY(-3px); }
+        }
+        .pet-mood-fx .fx-drop { position: absolute; top: 22px; width: 3px; height: 6px; border-radius: 2px; background: rgba(140, 170, 200, 0.85); opacity: 0; animation: fxDrop 1.6s ease-in infinite; }
+        .pet-mood-fx .fx-drop:nth-child(2) { left: calc(50% - 8px); animation-delay: 0s; }
+        .pet-mood-fx .fx-drop:nth-child(3) { left: calc(50% + 0px); animation-delay: 0.5s; }
+        .pet-mood-fx .fx-drop:nth-child(4) { left: calc(50% + 8px); animation-delay: 1.0s; }
+        @keyframes fxDrop {
+            0% { opacity: 0; transform: translateY(0); }
+            25% { opacity: 1; }
+            100% { opacity: 0; transform: translateY(14px); }
+        }
+
+        /* 睡眠 Z 指示 */
+        .pet-zz { position: absolute; top: -8px; right: 8px; font-size: 14px; font-weight: 700; color: rgba(180,200,220,0.85); opacity: 0; transition: opacity 0.6s ease; pointer-events: none; z-index: 4; letter-spacing: 1px; }
+        .pet-zz.show { opacity: 1; animation: zzFloat 2.4s ease-in-out infinite; }
+        @keyframes zzFloat {
+            0% { transform: translateY(0); opacity: 0.2; }
+            50% { transform: translateY(-6px); opacity: 1; }
+            100% { transform: translateY(-12px); opacity: 0; }
+        }
+
+        /* 富文本工具栏 */
+        .toolbar-btn {
+            padding: 0.4rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+            opacity: 0.5;
+        }
+        .toolbar-btn:hover {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .toolbar-btn.active {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.2);
+        }
+        .rich-editor {
+            flex: 1;
+            outline: none;
+            overflow-y: auto;
+            font-size: 0.875rem;
+            line-height: 1.6;
+        }
+        /* 分组标签栏 */
+        .group-tab {
+            padding: 0.4rem 0.9rem;
+            border-radius: 0.5rem;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            opacity: 0.35;
+            transition: all 0.2s;
+            cursor: pointer;
+            white-space: nowrap;
+            user-select: none;
+        }
+        .group-tab:hover { opacity: 0.65; background: rgba(255,255,255,0.08); }
+        .group-tab.active { opacity: 1; background: rgba(255,255,255,0.15); }
+        .group-tab.bm-drop-target {
+            opacity: 1;
+            background: rgba(255,255,255,0.22);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.5);
+        }
+        .group-tab[contenteditable="true"] {
+            outline: none;
+            user-select: text;
+            background: rgba(255,255,255,0.12);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+        }
+        .rich-editor:empty:before {
+            content: attr(placeholder);
+            opacity: 0.2;
+        }
+        /* 任务长按完成 —— 涨水动画 */
+        .todo-check { touch-action: none; }
+        .todo-check-fill {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            height: 0%;
+            background: rgba(16, 185, 129, 0.75);
+            pointer-events: none;
+            transition: height 0s;
+        }
+        .todo-check.holding .todo-check-fill {
+            height: 100%;
+            transition: height 1.5s linear;
+        }
+        /* 已完成状态：水位默认 100%，按住时缓慢下降 */
+        .todo-check.done .todo-check-fill {
+            height: 100%;
+            background: rgb(16, 185, 129);
+        }
+        .todo-check.done.holding .todo-check-fill {
+            height: 0%;
+            transition: height 1.5s linear;
+        }
+        /* 书签拖拽插入指示线 */
+        .bookmark-tile { position: relative; }
+        .bookmark-tile.bm-drop-before::before,
+        .bookmark-tile.bm-drop-after::after {
+            content: '';
+            position: absolute;
+            top: 8px;
+            bottom: 28px;
+            width: 2px;
+            background: rgba(255,255,255,0.55);
+            border-radius: 1px;
+            pointer-events: none;
+        }
+        .bookmark-tile.bm-drop-before::before { left: -4px; }
+        .bookmark-tile.bm-drop-after::after   { right: -4px; }
+
+        /* 页面载入动画 */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(1.02); filter: blur(10px); }
+            to { opacity: 1; transform: scale(1); filter: blur(0px); }
+        }
+        .animate-page { animation: fadeIn 1.5s cubic-bezier(0.16, 1, 0.3, 1); }
+
+        /* 搜索框美化 */
+        .search-container {
+            position: relative;
+        }
+        .engine-dropdown {
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            margin-bottom: 0.75rem;
+            width: 10rem;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(10px);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 60;
+        }
+        .engine-dropdown.active {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+        .engine-option {
+            width: 100%;
+            text-align: left;
+            padding: 0.75rem 1.5rem;
+            font-size: 10px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            transition: background 0.2s;
+        }
+        .engine-option:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* 统一输入框与按钮样式 */
+        input, select, textarea {
+            transition: all 0.3s ease;
+        }
+        
+        .modal-content {
+            animation: modalPop 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes modalPop {
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        /* 自定义 Todo 输入框样式 */
+        .todo-input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .apple-input {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 0.8rem 1.2rem;
+            outline: none;
+            width: 100%;
+        }
+        .apple-input:focus {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+        select.apple-input {
+            appearance: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+            color: white;
+        }
+        select.apple-input option {
+            background: #1c1c2e;
+            color: white;
+        }
+
+        /* 等比缩放容器：固定设计尺寸 1920×1080，由 JS 负责 scale */
+        #main-container {
+            width: 1920px;
+            height: 1080px;
+            transform-origin: center center;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body class="text-white animate-page">
+
+    <div class="h-screen w-full flex items-center justify-center relative overflow-hidden">
+        <!-- 背景层 -->
+        <div id="bg-overlay"></div>
+        <div class="fixed inset-0 bg-black/10 z-[-1]"></div>
+
+        <!-- 主内容容器：固定 1440×900，由 JS 等比缩放 -->
+        <div id="main-container" class="flex flex-col p-12 relative z-10">
+
+            <!-- 顶部：设置按钮 -->
+            <div class="flex justify-end items-start h-20">
+                <div class="flex gap-4 glass-group">
+                    <!-- 番茄钟 -->
+                    <div class="relative group/pomo">
+                        <button id="pomodoro-btn" class="apple-glass p-5 rounded-full hover:bg-white/30 transition-all flex items-center justify-center" title="番茄钟"><i data-lucide="timer" class="w-6 h-6"></i></button>
+                        <div id="pomodoro-panel" class="absolute right-0 top-full mt-3 w-72 apple-glass rounded-[1.8rem] p-5 z-50 opacity-0 invisible group-hover/pomo:opacity-100 group-hover/pomo:visible transition-all duration-500 transform translate-y-2 group-hover/pomo:translate-y-0">
+                            <div class="text-xs opacity-60 font-black tracking-[0.2em] uppercase mb-4">番茄钟</div>
+                            <!-- 配置区（未运行时显示） -->
+                            <div id="pomodoro-setup">
+                                <div class="flex items-center gap-2 mb-3">
+                                    <button type="button" data-pomo-dur="25" class="pomo-dur-btn flex-1 px-3 py-2 rounded-xl text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors active">25</button>
+                                    <button type="button" data-pomo-dur="30" class="pomo-dur-btn flex-1 px-3 py-2 rounded-xl text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors">30</button>
+                                    <button type="button" data-pomo-dur="45" class="pomo-dur-btn flex-1 px-3 py-2 rounded-xl text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors">45</button>
+                                </div>
+                                <div class="flex items-center gap-2 mb-4">
+                                    <input id="pomodoro-custom" type="number" min="1" max="180" placeholder="自定义 (分钟)" class="flex-1 bg-white/5 rounded-xl px-3 py-2 text-xs outline-none placeholder:opacity-40 focus:bg-white/10 transition-colors" />
+                                </div>
+                                <button id="pomodoro-start" onclick="startPomodoro()" class="w-full py-3 rounded-2xl bg-white/15 hover:bg-white/25 transition-colors text-xs font-black tracking-[0.3em] uppercase">开始</button>
+                            </div>
+                            <!-- 运行区（运行中显示） -->
+                            <div id="pomodoro-run" class="hidden text-center">
+                                <div id="pomodoro-phase" class="text-[10px] opacity-60 tracking-[0.3em] uppercase font-black mb-2">专注 · 第 1 轮</div>
+                                <div id="pomodoro-time" class="text-5xl font-black tracking-wider mb-4">25:00</div>
+                                <div class="flex gap-2">
+                                    <button id="pomodoro-pause" onclick="togglePomodoroPause()" class="flex-1 py-2 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase bg-white/5 hover:bg-white/15 transition-colors">暂停</button>
+                                    <button onclick="skipPomodoro()" class="flex-1 py-2 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase bg-white/5 hover:bg-white/15 transition-colors">跳过</button>
+                                    <button onclick="stopPomodoro()" class="flex-1 py-2 rounded-xl text-[10px] font-black tracking-[0.2em] uppercase bg-white/5 hover:bg-white/15 transition-colors">停止</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 音乐下拉菜单 -->
+                <div class="relative group/audio">
+                    <button id="audio-btn" class="apple-glass p-5 rounded-full hover:bg-white/30 transition-all flex items-center justify-center">
+                        <i id="audio-main-icon" data-lucide="music" class="w-6 h-6"></i>
+                    </button>
+                    <!-- 下拉列表 -->
+                    <div class="absolute right-0 mt-3 py-3 w-56 apple-glass rounded-[1.8rem] opacity-0 invisible group-hover/audio:opacity-100 group-hover/audio:visible transition-all duration-500 z-50 transform translate-y-2 group-hover/audio:translate-y-0 max-h-[70vh] overflow-y-auto no-scrollbar">
+                        <div class="px-6 py-2 mb-1 text-xs opacity-60 font-black tracking-[0.2em] uppercase">环境音</div>
+                        <button onclick="changeAudio('none')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center gap-3">
+                            <i data-lucide="volume-x" class="w-4 h-4 opacity-50"></i> 静音
+                        </button>
+                        <button onclick="changeAudio('rain')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center gap-3">
+                            <i data-lucide="cloud-rain" class="w-4 h-4 opacity-50"></i> 雨声
+                        </button>
+                        <!-- 用户自定义 -->
+                        <div class="px-6 pt-3 pb-1 mt-2 border-t border-white/10 text-xs opacity-60 font-black tracking-[0.2em] uppercase">我的音乐</div>
+                        <div id="custom-audio-list"></div>
+                        <button onclick="addCustomAudioUrl(event)" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center gap-3">
+                            <i data-lucide="link" class="w-4 h-4 opacity-50"></i> 添加链接
+                        </button>
+                        <button onclick="document.getElementById('custom-audio-file').click()" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center gap-3">
+                            <i data-lucide="upload" class="w-4 h-4 opacity-50"></i> 上传文件
+                        </button>
+                        <input id="custom-audio-file" type="file" accept="audio/*" class="hidden" onchange="addCustomAudioFile(event)" />
+                    </div>
+                </div>
+                
+                <button onclick="toggleModal('settings-modal')" class="apple-glass p-5 rounded-full hover:bg-white/30 transition-all">
+                    <i data-lucide="image" class="w-6 h-6"></i>
+                </button>
+                <!-- 面板开关下拉 -->
+                <div class="relative group/panels">
+                    <button class="apple-glass p-5 rounded-full hover:bg-white/30 transition-all flex items-center justify-center">
+                        <i data-lucide="layout-dashboard" class="w-6 h-6"></i>
+                    </button>
+                    <div class="absolute right-0 mt-3 py-3 w-52 apple-glass rounded-[1.8rem] opacity-0 invisible group-hover/panels:opacity-100 group-hover/panels:visible transition-all duration-500 z-50 transform translate-y-2 group-hover/panels:translate-y-0">
+                        <div class="px-6 py-2 mb-1 text-xs opacity-60 font-black tracking-[0.2em] uppercase">面板</div>
+                        <button onclick="togglePanel('shortcuts')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center justify-between">
+                            <span class="flex items-center gap-3"><i data-lucide="layout-grid" class="w-4 h-4 opacity-50"></i> Shortcuts</span>
+                            <i id="dd-check-shortcuts" data-lucide="check" class="w-3.5 h-3.5 transition-opacity"></i>
+                        </button>
+                        <button onclick="togglePanel('note')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center justify-between">
+                            <span class="flex items-center gap-3"><i data-lucide="file-text" class="w-4 h-4 opacity-50"></i> Notes</span>
+                            <i id="dd-check-note" data-lucide="check" class="w-3.5 h-3.5 transition-opacity"></i>
+                        </button>
+                        <button onclick="togglePanel('todo')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center justify-between">
+                            <span class="flex items-center gap-3"><i data-lucide="check-square" class="w-4 h-4 opacity-50"></i> Tasks</span>
+                            <i id="dd-check-todo" data-lucide="check" class="w-3.5 h-3.5 transition-opacity"></i>
+                        </button>
+                        <button onclick="togglePanel('pet')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center justify-between">
+                            <span class="flex items-center gap-3"><i data-lucide="heart" class="w-4 h-4 opacity-50"></i> Pet</span>
+                            <i id="dd-check-pet" data-lucide="check" class="w-3.5 h-3.5 transition-opacity"></i>
+                        </button>
+                        <button onclick="togglePanel('hitokoto')" class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center justify-between">
+                            <span class="flex items-center gap-3"><i data-lucide="quote" class="w-4 h-4 opacity-50"></i> Motto</span>
+                            <i id="dd-check-hitokoto" data-lucide="check" class="w-3.5 h-3.5 transition-opacity"></i>
+                        </button>
+                    </div>
+                </div>
+                <!-- 作者主页下拉 -->
+                <div class="relative group/author">
+                    <button class="apple-glass p-5 rounded-full hover:bg-white/30 transition-all flex items-center justify-center">
+                        <i data-lucide="rocket" class="w-6 h-6"></i>
+                    </button>
+                    <div class="absolute right-0 mt-3 py-3 w-56 apple-glass rounded-[1.8rem] opacity-0 invisible group-hover/author:opacity-100 group-hover/author:visible transition-all duration-500 z-50 transform translate-y-2 group-hover/author:translate-y-0">
+                        <div id="author-dd-name" class="px-6 py-2 mb-1 text-xs opacity-60 font-black tracking-[0.2em] uppercase">作者主页</div>
+                        <div id="author-links"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 中间：时钟、天气与搜索 -->
+        <div class="flex flex-col items-center justify-center flex-1">
+            <div class="w-full max-w-2xl flex flex-col items-center">
+
+                <!-- 时间与天气容器 -->
+                <div class="flex flex-col items-center mb-2 animate-page">
+                    <div id="time" class="text-7xl lg:text-8xl font-extralight tracking-tighter mb-2">00:00</div>
+                    <div class="flex items-center gap-6 mb-10">
+                        <div id="date" class="text-xs lg:text-sm tracking-[0.5em] uppercase font-bold border-r border-white/20 pr-6 text-white">JAN 01, MONDAY</div>
+                        <div id="weather" class="flex items-center gap-2 text-xs lg:text-sm tracking-[0.3em] uppercase font-bold text-white">
+                            <span id="weather-temp">--°C</span>
+                            <span id="weather-desc">加载中...</span>
+                        </div>
+                    </div>
+
+                    <!-- 每日格言 -->
+                    <div id="hitokoto-container" class="max-w-xl text-center px-4 mb-8 h-14 flex flex-col justify-center relative group/hitokoto">
+                        <div class="absolute -top-1 left-full ml-2 flex items-center gap-1 opacity-0 group-hover/hitokoto:opacity-100 transition-opacity z-10">
+                            <div class="relative group/hsrc">
+                                <button title="切换来源" class="p-1.5 rounded-full hover:bg-white/15 transition-all">
+                                    <i data-lucide="globe" class="w-3 h-3 opacity-70"></i>
+                                </button>
+                                <div class="absolute top-full right-0 mt-2 py-2 w-40 apple-glass rounded-2xl opacity-0 invisible group-hover/hsrc:opacity-100 group-hover/hsrc:visible transition-all z-50">
+                                    <button onclick="setHitokotoSource('hitokoto', event)" data-src="hitokoto" class="src-item w-full text-left px-4 py-2 text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors flex items-center gap-2">
+                                        <i data-lucide="check" class="w-3 h-3 src-check opacity-0 flex-shrink-0"></i>
+                                        <span>一言</span>
+                                    </button>
+                                    <button onclick="setHitokotoSource('jinrishici', event)" data-src="jinrishici" class="src-item w-full text-left px-4 py-2 text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors flex items-center gap-2">
+                                        <i data-lucide="check" class="w-3 h-3 src-check opacity-0 flex-shrink-0"></i>
+                                        <span>今日诗词</span>
+                                    </button>
+                                    <button onclick="setHitokotoSource('githubzen', event)" data-src="githubzen" class="src-item w-full text-left px-4 py-2 text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors flex items-center gap-2">
+                                        <i data-lucide="check" class="w-3 h-3 src-check opacity-0 flex-shrink-0"></i>
+                                        <span>Zen 禅言</span>
+                                    </button>
+                                    <button onclick="setHitokotoSource('zenquotes', event)" data-src="zenquotes" class="src-item w-full text-left px-4 py-2 text-xs font-bold tracking-widest uppercase hover:bg-white/10 transition-colors flex items-center gap-2">
+                                        <i data-lucide="check" class="w-3 h-3 src-check opacity-0 flex-shrink-0"></i>
+                                        <span>英文名言</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <button onclick="customizeHitokoto(event)" title="自定义" class="p-1.5 rounded-full hover:bg-white/15 transition-all">
+                                <i data-lucide="pencil" class="w-3 h-3 opacity-70"></i>
+                            </button>
+                            <button onclick="refreshHitokoto(event)" title="换一条" class="p-1.5 rounded-full hover:bg-white/15 transition-all">
+                                <i data-lucide="refresh-cw" class="w-3 h-3 opacity-70"></i>
+                            </button>
+                            <button onclick="closeHitokoto(event)" title="关闭" class="p-1.5 rounded-full hover:bg-white/15 transition-all">
+                                <i data-lucide="x" class="w-3 h-3 opacity-70"></i>
+                            </button>
+                        </div>
+                        <p id="hitokoto" class="text-lg font-normal tracking-widest text-white italic drop-shadow-sm opacity-0 transition-opacity duration-1000 focus:outline-none"></p>
+                        <p id="hitokoto-from" class="text-[11px] font-bold tracking-[0.3em] uppercase text-white mt-1 opacity-0 transition-opacity duration-1000"></p>
+                    </div>
+                </div>
+
+                <!-- 搜索框 -->
+                <div class="apple-glass rounded-full p-2 flex items-center w-full focus-within:ring-[12px] ring-white/5 transition-all duration-700 shadow-2xl search-container">
+                    <div class="relative">
+                        <button id="engine-current" onclick="toggleEngineDropdown(event)" class="text-xs px-8 py-3 outline-none cursor-pointer border-r border-white/20 font-black uppercase tracking-[0.2em] text-center text-white flex items-center gap-2 hover:bg-white/5 rounded-l-full transition-colors">
+                            <span id="current-engine-name">Baidu</span>
+                            <i data-lucide="chevron-down" class="w-3 h-3 opacity-50"></i>
+                        </button>
+                        
+                        <!-- 自定义下拉菜单 -->
+                        <div id="engine-dropdown" class="engine-dropdown apple-glass rounded-[1.8rem] overflow-hidden py-2">
+                            <button onclick="setSearchEngine('baidu')" class="engine-option">Baidu</button>
+                            <button onclick="setSearchEngine('google')" class="engine-option">Google</button>
+                            <button onclick="setSearchEngine('bing')" class="engine-option">Bing</button>
+                        </div>
+                    </div>
+                    <input type="text" id="search-input" placeholder="Discovery starts here..." 
+                           class="flex-1 bg-transparent border-none outline-none px-6 text-lg placeholder:text-white/20 font-light text-white selection:bg-white/30"
+                           onkeydown="if(event.key === 'Enter') performSearch()">
+                    <button onclick="performSearch()" class="bg-white/10 hover:bg-white/30 p-4 rounded-full transition-all">
+                        <i data-lucide="search" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 下方分栏区域 (固定高度占比) -->
+        <div id="panels-container" class="h-[45%] flex gap-10 mt-4 overflow-hidden pb-4 glass-group">
+            <!-- 快捷方式面板 -->
+            <div id="panel-shortcuts" class="apple-glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col overflow-hidden group/shortcuts flex-1 min-w-0">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3 text-base uppercase tracking-[0.3em] font-normal opacity-40">
+                        <i data-lucide="layout-grid" class="w-5 h-5"></i> Shortcuts
+                    </div>
+                    <button onclick="togglePanel('shortcuts')" id="close-shortcuts" class="opacity-0 group-hover/shortcuts:opacity-30 hover:!opacity-100 transition-all">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <!-- 分组标签栏 -->
+                <div id="group-tabs" class="flex items-center gap-1 pt-1 mb-4 pb-3 border-b border-white/10 overflow-x-auto no-scrollbar"></div>
+                <!-- 书签网格 -->
+                <div class="flex-1 flex gap-2 min-h-0">
+                    <div class="flex-1 min-h-0" id="bookmarks-grid-wrapper">
+                        <div class="grid gap-4" id="bookmarks-grid"></div>
+                    </div>
+                    <!-- 竖向分页 -->
+                    <div class="flex flex-col items-center justify-center gap-1.5 opacity-0 group-hover/shortcuts:opacity-40 transition-opacity">
+                        <button onclick="prevPage()" class="hover:opacity-100 transition-opacity"><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
+                        <span id="page-indicator" class="text-[10px] font-black leading-none">1/1</span>
+                        <button onclick="nextPage()" class="hover:opacity-100 transition-opacity"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 笔记面板 -->
+            <div id="panel-note-col" class="apple-glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col overflow-hidden flex-1 min-w-0 group/note">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3 text-base uppercase tracking-[0.3em] font-normal opacity-40">
+                        <i data-lucide="file-text" class="w-5 h-5"></i> Notes
+                    </div>
+                    <button onclick="togglePanel('note')" id="close-note" class="opacity-0 group-hover/note:opacity-30 hover:!opacity-100 transition-all">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                </div>
+                <!-- 笔记标签栏 + 格式下拉 -->
+                <div class="flex items-center gap-2 pt-1 mb-4 pb-3 border-b border-white/10 flex-shrink-0">
+                    <div id="note-tabs" class="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 min-w-0"></div>
+                    <div class="relative flex-shrink-0">
+                        <button id="note-toolbar-toggle" onclick="toggleNoteToolbar(event)" class="toolbar-btn" title="格式"><i data-lucide="case-sensitive" class="w-3.5 h-3.5"></i></button>
+                        <div id="note-toolbar-dropdown" class="hidden absolute right-0 top-full mt-2 z-20 apple-glass rounded-xl p-2 flex gap-1 flex-wrap">
+                            <button onclick="formatDoc('bold')" class="toolbar-btn" title="加粗"><i data-lucide="bold" class="w-3.5 h-3.5"></i></button>
+                            <button onclick="formatDoc('italic')" class="toolbar-btn" title="斜体"><i data-lucide="italic" class="w-3.5 h-3.5"></i></button>
+                            <button onclick="formatDoc('fontSize', '5')" class="toolbar-btn" title="标题"><i data-lucide="heading" class="w-3.5 h-3.5"></i></button>
+                            <div class="w-px h-3 bg-white/10 my-auto mx-1"></div>
+                            <button onclick="formatDoc('justifyLeft')" class="toolbar-btn" title="左对齐"><i data-lucide="align-left" class="w-3.5 h-3.5"></i></button>
+                            <button onclick="formatDoc('justifyCenter')" class="toolbar-btn" title="居中"><i data-lucide="align-center" class="w-3.5 h-3.5"></i></button>
+                            <button onclick="formatDoc('removeFormat')" class="toolbar-btn" title="清除"><i data-lucide="eraser" class="w-3.5 h-3.5"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-1 flex gap-2 min-h-0 relative">
+                    <div id="notepad" contenteditable="true" class="flex-1 min-w-0 rich-editor no-scrollbar" placeholder="开始记录你的想法..."></div>
+                    <!-- 竖向滚动（UI 复用 SHORTCUTS 分页样式） -->
+                    <div class="flex flex-col items-center justify-center gap-1.5 opacity-0 group-hover/note:opacity-40 transition-opacity flex-shrink-0">
+                        <button onclick="scrollNoteUp()" class="hover:opacity-100 transition-opacity"><i data-lucide="chevron-up" class="w-4 h-4"></i></button>
+                        <span id="note-scroll-indicator" class="text-[10px] font-black leading-none">1/1</span>
+                        <button onclick="scrollNoteDown()" class="hover:opacity-100 transition-opacity"><i data-lucide="chevron-down" class="w-4 h-4"></i></button>
+                    </div>
+                    <!-- 自动保存提示 -->
+                    <div id="note-saved-tip" class="absolute bottom-0 right-0 text-[9px] opacity-0 tracking-[0.25em] font-black uppercase pointer-events-none" style="transition: opacity 0.5s;">已保存</div>
+                </div>
+            </div>
+
+            <!-- 待办面板 -->
+            <div id="panel-todo-col" class="apple-glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col overflow-hidden flex-1 min-w-0 group/todo">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3 text-base uppercase tracking-[0.3em] font-normal opacity-40">
+                        <i data-lucide="check-square" class="w-5 h-5"></i> Tasks
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="resetTodoSort()" id="todo-sort-btn" title="重置为自动排序" style="opacity:0" class="hover:!opacity-100 transition-all">
+                            <i data-lucide="arrow-up-down" class="w-4 h-4"></i>
+                        </button>
+                        <button onclick="addTodo()" class="opacity-20 hover:opacity-100 transition-all">
+                            <i data-lucide="plus" class="w-4 h-4"></i>
+                        </button>
+                        <button onclick="togglePanel('todo')" id="close-todo" class="opacity-0 group-hover/todo:opacity-30 hover:!opacity-100 transition-all">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex-1 overflow-y-auto no-scrollbar flex flex-col min-h-0">
+                    <div id="todo-list" class="space-y-1"></div>
+                    <!-- 已完成折叠区 -->
+                    <div id="todo-completed-section" class="hidden mt-2 border-t border-white/10 pt-2">
+                        <button onclick="toggleCompletedSection()" class="flex items-center gap-2 w-full text-left py-1.5 px-2 rounded-xl hover:bg-white/5 transition-all">
+                            <span class="text-[12px] font-bold uppercase tracking-[0.1em] opacity-35">已完成 <span id="todo-completed-count">0</span> 项</span>
+                            <i id="todo-completed-arrow" data-lucide="chevron-down" class="w-3 h-3 opacity-30 transition-transform flex-shrink-0 ml-auto"></i>
+                        </button>
+                        <div id="todo-completed-list" class="hidden space-y-1 mt-1"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 宠物面板 -->
+            <div id="panel-pet" class="apple-glass rounded-[2.5rem] p-6 lg:p-8 flex flex-col overflow-hidden flex-1 min-w-0 group/pet">
+                <div class="flex items-center justify-between mb-6">
+                    <div class="flex items-center gap-3 text-base uppercase tracking-[0.3em] font-normal opacity-40">
+                        <i data-lucide="heart" class="w-5 h-5"></i> Pet
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <button id="pet-free-btn" onclick="togglePetFree()" title="放出宠物" class="opacity-0 group-hover/pet:opacity-30 hover:!opacity-100 transition-all">
+                            <i data-lucide="log-out" class="w-4 h-4"></i>
+                        </button>
+                        <button onclick="openPetResetConfirm()" title="重置宠物" class="opacity-0 group-hover/pet:opacity-30 hover:!opacity-100 transition-all">
+                            <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                        </button>
+                        <button onclick="togglePanel('pet')" id="close-pet" class="opacity-0 group-hover/pet:opacity-30 hover:!opacity-100 transition-all">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex-1 relative min-h-[180px]">
+                    <!-- 已选择宠物后显示 —— 宠物在分栏内自由活动 -->
+                    <div id="pet-main" class="hidden absolute inset-0">
+                        <div id="pet" class="pet-wrap state-idle absolute" data-type="cat" data-state="idle" style="left:0; top:0;">
+                            <div id="pet-mood" class="pet-mood"></div>
+                            <div id="pet-mood-fx" class="pet-mood-fx"></div>
+                            <div id="pet-zz" class="pet-zz">z<sup style="font-size:9px">z</sup></div>
+                            <div id="pet-food" class="pet-food"></div>
+                        </div>
+                    </div>
+                    <!-- 初次选择引导（内嵌） -->
+                    <div id="pet-onboard" class="hidden absolute inset-0 flex-col items-center justify-center">
+                        <div class="text-sm font-light opacity-80 mb-1 tracking-tight">给你的宠物起个名字</div>
+                        <div id="pet-onboard-hint" class="text-[9px] opacity-40 uppercase tracking-[0.3em] font-black mb-4">填写名字后选择动物</div>
+                        <input type="text" id="pet-onboard-name" class="w-full bg-white/5 rounded-xl px-3 py-2.5 text-sm outline-none placeholder:opacity-40 focus:bg-white/10 transition-colors mb-5 text-center" placeholder="TA 的名字..." maxlength="20">
+                        <div class="grid grid-cols-2 gap-3 w-full">
+                            <button type="button" data-onboard-pet="cat" class="pet-onboard-card p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex flex-col items-center gap-1 disabled:cursor-not-allowed" disabled>
+                                <div class="pet-onboard-svg w-16 h-16" data-type="cat"></div>
+                                <span class="text-[9px] uppercase tracking-[0.3em] font-black opacity-70">Cat</span>
+                            </button>
+                            <button type="button" data-onboard-pet="dog" class="pet-onboard-card p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex flex-col items-center gap-1 disabled:cursor-not-allowed" disabled>
+                                <div class="pet-onboard-svg w-16 h-16" data-type="dog"></div>
+                                <span class="text-[9px] uppercase tracking-[0.3em] font-black opacity-70">Dog</span>
+                            </button>
+                            <button type="button" data-onboard-pet="monkey" class="pet-onboard-card p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex flex-col items-center gap-1 disabled:cursor-not-allowed" disabled>
+                                <div class="pet-onboard-svg w-16 h-16" data-type="monkey"></div>
+                                <span class="text-[9px] uppercase tracking-[0.3em] font-black opacity-70">Monkey</span>
+                            </button>
+                            <button type="button" data-onboard-pet="pig" class="pet-onboard-card p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all flex flex-col items-center gap-1 disabled:cursor-not-allowed" disabled>
+                                <div class="pet-onboard-svg w-16 h-16" data-type="pig"></div>
+                                <span class="text-[9px] uppercase tracking-[0.3em] font-black opacity-70">Pig</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- 弹窗 -->
+    <div id="donate-modal" class="modal">
+        <div class="apple-glass p-16 rounded-[4.5rem] max-w-sm w-full text-center relative mx-4">
+            <button onclick="toggleModal('donate-modal')" class="absolute top-10 right-10 opacity-30 hover:opacity-100"><i data-lucide="x"></i></button>
+            <h3 class="text-3xl font-light mb-4 tracking-tight">赞助作者</h3>
+            <div class="bg-white/90 p-6 rounded-[3rem] inline-block mb-8">
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=Donation" alt="QR" class="w-44 h-44 opacity-80">
+            </div>
+            <p class="text-[10px] opacity-30 uppercase tracking-[0.5em] font-black italic">Thanks for your coffee!</p>
+        </div>
+    </div>
+
+    <div id="bookmark-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-md w-full relative modal-content">
+            <h3 id="bm-modal-title" class="text-2xl font-light mb-10 tracking-tight">添加快捷方式</h3>
+            <div class="space-y-6">
+                <div class="space-y-2">
+                    <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">名称</label>
+                    <input type="text" id="bm-name" class="apple-input font-light" placeholder="例如: GitHub">
+                </div>
+                <div class="space-y-2">
+                    <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">链接地址</label>
+                    <input type="text" id="bm-url" class="apple-input font-light" placeholder="https://...">
+                </div>
+                <div class="space-y-2">
+                    <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">所属分组</label>
+                    <select id="bm-group" class="apple-input font-light"></select>
+                </div>
+                <div class="flex gap-4 pt-4">
+                    <button onclick="closeBookmarkModal()" class="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 py-5 rounded-[2rem] transition-all text-[10px] uppercase tracking-widest font-black opacity-50 hover:opacity-100">取消</button>
+                    <button id="bm-save-btn" onclick="saveBookmark()" class="flex-1 bg-white text-black font-black py-5 rounded-[2rem] hover:scale-[1.02] active:scale-[0.98] transition-all text-[10px] uppercase tracking-widest">确认保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建/重命名分组 modal -->
+    <div id="group-name-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-sm w-full relative modal-content">
+            <h3 id="group-modal-title" class="text-2xl font-light mb-10 tracking-tight">新建分组</h3>
+            <input type="text" id="group-name-input" class="apple-input font-light mb-6" placeholder="分组名称...">
+            <div class="flex gap-4">
+                <button onclick="toggleModal('group-name-modal')" class="flex-1 bg-white/5 border border-white/10 py-5 rounded-[2rem] text-[10px] uppercase tracking-widest font-black opacity-50">取消</button>
+                <button onclick="confirmGroupName()" class="flex-1 bg-white text-black font-black py-5 rounded-[2rem] text-[10px] uppercase tracking-widest">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除分组确认 modal -->
+    <div id="delete-group-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-md w-full relative modal-content">
+            <h3 id="del-group-title" class="text-2xl font-light mb-4 tracking-tight">删除分组</h3>
+            <p id="del-group-msg" class="text-sm opacity-50 mb-8 leading-relaxed font-light"></p>
+            <div id="del-group-move-section" class="space-y-2 mb-8 hidden">
+                <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">书签移入</label>
+                <select id="del-group-target" class="apple-input font-light"></select>
+            </div>
+            <div class="flex gap-4">
+                <button onclick="toggleModal('delete-group-modal')" class="flex-1 bg-white/5 border border-white/10 py-5 rounded-[2rem] text-[10px] uppercase tracking-widest font-black opacity-50">取消</button>
+                <button onclick="executeDeleteGroup()" class="flex-1 bg-red-500/80 hover:bg-red-500 text-white font-black py-5 rounded-[2rem] text-[10px] uppercase tracking-widest transition-all">确认删除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分组右键/长按菜单 -->
+    <div id="group-ctx-menu" class="hidden fixed z-50 apple-glass rounded-2xl p-2 shadow-xl min-w-[120px]">
+        <button onclick="startRenameGroupFromCtx()" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-white/10 transition-all">重命名</button>
+        <button id="ctx-delete-btn" onclick="confirmDeleteGroup()" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-red-500/20 text-red-300 transition-all">删除</button>
+    </div>
+
+    <!-- 笔记标签右键菜单 -->
+    <div id="note-ctx-menu" class="hidden fixed z-50 apple-glass rounded-2xl p-2 shadow-xl min-w-[120px]">
+        <button onclick="startRenameNoteFromCtx()" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-white/10 transition-all">重命名</button>
+        <button id="note-ctx-delete-btn" onclick="confirmDeleteNote()" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-red-500/20 text-red-300 transition-all">删除</button>
+    </div>
+
+    <!-- 待办优先级选择菜单 -->
+    <div id="todo-priority-menu" class="hidden fixed z-50 apple-glass rounded-2xl p-2 shadow-xl min-w-[110px]">
+        <button onclick="changeTodoPriority('high')" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-white/10 transition-all flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>高</button>
+        <button onclick="changeTodoPriority('medium')" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-white/10 transition-all flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>中</button>
+        <button onclick="changeTodoPriority('low')" class="w-full text-left px-3 py-2 text-[11px] uppercase tracking-[0.08em] font-bold rounded-xl hover:bg-white/10 transition-all flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>低</button>
+    </div>
+
+    <!-- 重置宠物确认 modal -->
+    <div id="pet-reset-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-sm w-full relative modal-content">
+            <h3 class="text-2xl font-light mb-4 tracking-tight">重置宠物</h3>
+            <p class="text-sm opacity-50 mb-8 leading-relaxed font-light">确定要重新选择宠物吗？当前名字和种类会被清除。</p>
+            <div class="flex gap-4">
+                <button onclick="toggleModal('pet-reset-modal')" class="flex-1 bg-white/5 border border-white/10 py-5 rounded-[2rem] text-[10px] uppercase tracking-widest font-black opacity-50">取消</button>
+                <button onclick="executePetReset()" class="flex-1 bg-red-500/80 hover:bg-red-500 text-white font-black py-5 rounded-[2rem] text-[10px] uppercase tracking-widest transition-all">确认重置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除笔记确认 modal -->
+    <div id="delete-note-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-sm w-full relative modal-content">
+            <h3 class="text-2xl font-light mb-4 tracking-tight">删除笔记</h3>
+            <p class="text-sm opacity-50 mb-8 leading-relaxed font-light">确定删除 <span id="del-note-title" class="text-white opacity-100 font-semibold"></span> 吗？此操作不可撤销。</p>
+            <div class="flex gap-4">
+                <button onclick="toggleModal('delete-note-modal')" class="flex-1 bg-white/5 border border-white/10 py-5 rounded-[2rem] text-[10px] uppercase tracking-widest font-black opacity-50">取消</button>
+                <button onclick="executeDeleteNote()" class="flex-1 bg-red-500/80 hover:bg-red-500 text-white font-black py-5 rounded-[2rem] text-[10px] uppercase tracking-widest transition-all">确认删除</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="todo-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-md w-full relative modal-content">
+            <h3 class="text-2xl font-light mb-8 tracking-tight">添加待办事项</h3>
+            <div class="space-y-5">
+                <input type="text" id="todo-input" class="apple-input font-light" placeholder="输入任务内容...">
+                <!-- 优先级 -->
+                <div class="space-y-2">
+                    <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">优先级</label>
+                    <div class="flex gap-3">
+                        <button data-priority="high" onclick="setTodoPriority('high')" class="flex-1 py-3 rounded-2xl border border-white/20 text-[10px] uppercase tracking-widest font-black transition-all" style="opacity:0.4">
+                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-500 mr-1.5 align-middle"></span>高
+                        </button>
+                        <button data-priority="medium" onclick="setTodoPriority('medium')" class="flex-1 py-3 rounded-2xl border border-white/20 text-[10px] uppercase tracking-widest font-black transition-all" style="opacity:1;background:rgba(255,255,255,0.15)">
+                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 mr-1.5 align-middle"></span>中
+                        </button>
+                        <button data-priority="low" onclick="setTodoPriority('low')" class="flex-1 py-3 rounded-2xl border border-white/20 text-[10px] uppercase tracking-widest font-black transition-all" style="opacity:0.4">
+                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-sky-400 mr-1.5 align-middle"></span>低
+                        </button>
+                    </div>
+                </div>
+                <!-- 截止日期 -->
+                <div class="space-y-2">
+                    <label class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">截止日期（可选）</label>
+                    <input type="date" id="todo-due" class="apple-input font-light" style="color-scheme:dark">
+                </div>
+                <div class="flex gap-4 pt-2">
+                    <button onclick="toggleModal('todo-modal')" class="flex-1 bg-white/5 border border-white/10 py-5 rounded-[2rem] text-[10px] uppercase tracking-widest font-black opacity-50">取消</button>
+                    <button onclick="confirmAddTodo()" class="flex-1 bg-white text-black font-black py-5 rounded-[2rem] text-[10px] uppercase tracking-widest">添加任务</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="modal">
+        <div class="apple-glass p-12 rounded-[4rem] max-w-md w-full relative">
+            <button onclick="toggleModal('settings-modal')" class="absolute top-10 right-10 opacity-30 hover:opacity-100"><i data-lucide="x"></i></button>
+            <h3 class="text-2xl font-light mb-10 tracking-tight">设置</h3>
+            <div class="space-y-8">
+                <div class="inline-flex rounded-2xl overflow-hidden border border-white/20 bg-white/5 p-1 w-full">
+                    <button id="bg-mode-url" onclick="setBgMode('url')" class="flex-1 py-3 rounded-xl text-[10px] uppercase tracking-[0.35em] font-black opacity-70 hover:opacity-100 transition-all">网络图片</button>
+                    <button id="bg-mode-local" onclick="setBgMode('local')" class="flex-1 py-3 rounded-xl text-[10px] uppercase tracking-[0.35em] font-black opacity-70 hover:opacity-100 transition-all">本地图片</button>
+                    <button id="bg-mode-presets" onclick="setBgMode('presets')" class="flex-1 py-3 rounded-xl text-[10px] uppercase tracking-[0.35em] font-black opacity-70 hover:opacity-100 transition-all">预设风景</button>
+                </div>
+
+                <div id="bg-pane-url" class="space-y-4">
+                    <input type="text" id="bg-url" class="w-full bg-white/5 border border-white/20 rounded-2xl p-5 outline-none font-light" placeholder="图片链接 (https://...jpg/png/webp)">
+                    <button onclick="applyBgFromUrl()" class="w-full bg-white text-black font-black py-5 rounded-[2.5rem]">应用网络壁纸</button>
+                </div>
+
+                <div id="bg-pane-local" class="space-y-4 hidden">
+                    <input type="file" id="bg-file" accept="image/*" class="hidden" onchange="updateBgFileLabel()">
+                    <button type="button" onclick="document.getElementById('bg-file').click()" class="w-full bg-white/5 border border-white/20 rounded-2xl p-5 outline-none font-light text-[11px] uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center justify-center gap-3">
+                        <i data-lucide="image" class="w-4 h-4 opacity-60"></i>
+                        <span id="bg-file-label" class="opacity-70 truncate">选择本地图片</span>
+                    </button>
+                    <button onclick="applyBgFromLocal()" class="w-full bg-white text-black font-black py-5 rounded-[2.5rem]">应用本地壁纸</button>
+                    <p class="text-[10px] opacity-40 tracking-[0.25em] uppercase font-black">提示：本地图片会以数据形式保存在浏览器里</p>
+                </div>
+
+                <div id="bg-pane-presets" class="space-y-4 hidden">
+                    <div class="grid grid-cols-2 gap-3" id="presets-grid">
+                        <!-- 动态渲染预设图片 -->
+                    </div>
+                </div>
+
+                <!-- 面板显示 -->
+                <div class="space-y-4 pt-4 border-t border-white/10">
+                    <div class="text-[9px] uppercase tracking-[0.3em] font-black opacity-30 ml-4">面板显示</div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button id="toggle-shortcuts" onclick="togglePanel('shortcuts')" class="py-3 px-4 rounded-2xl text-[10px] uppercase tracking-[0.2em] font-black border border-white/20 transition-all">快捷方式</button>
+                        <button id="toggle-note" onclick="togglePanel('note')" class="py-3 px-4 rounded-2xl text-[10px] uppercase tracking-[0.2em] font-black border border-white/20 transition-all">笔记</button>
+                        <button id="toggle-todo" onclick="togglePanel('todo')" class="py-3 px-4 rounded-2xl text-[10px] uppercase tracking-[0.2em] font-black border border-white/20 transition-all">待办</button>
+                        <button id="toggle-pet" onclick="togglePanel('pet')" class="py-3 px-4 rounded-2xl text-[10px] uppercase tracking-[0.2em] font-black border border-white/20 transition-all">宠物</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <audio id="bg-audio" loop>
+        <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3" type="audio/mpeg">
+    </audio>
+
+    <script>
+        // ===== 作者配置 =====
+        const AUTHOR_CONFIG = {
+            name: '作者主页',
+            links: [
+                { label: '阿宇不画图-小红书', icon: 'heart', url: 'https://xhslink.com/m/4PoZVQp09DM' },
+            ]
+        };
+
+        lucide.createIcons();
+
+        // 等比缩放：始终以 1920×1080 为基准适配实际视口
+        function scaleLayout() {
+            const el = document.getElementById('main-container');
+            const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+            el.style.transform = 'scale(' + scale + ')';
+        }
+        scaleLayout();
+        window.addEventListener('resize', scaleLayout);
+
+        // --- 快捷方式分组数据 ---
+        function loadGroups() {
+            const saved = localStorage.getItem('shortcuts.groups');
+            if (saved) return JSON.parse(saved);
+
+            // 从旧格式迁移，保留数据不丢失
+            const old = localStorage.getItem('bookmarks_v7');
+            if (old) {
+                const migrated = [{ id: 'group-default', name: '默认', bookmarks: JSON.parse(old) }];
+                localStorage.setItem('shortcuts.groups', JSON.stringify(migrated));
+                return migrated;
+            }
+
+            // 首次默认分组
+            return [
+                {
+                    id: 'group-work',
+                    name: '工作',
+                    bookmarks: [
+                        { name: 'Github', url: 'https://github.com', icon: 'github' },
+                        { name: 'ArchDaily', url: 'https://archdaily.com', icon: 'layout' },
+                        { name: 'Pinterest', url: 'https://pinterest.com', icon: 'image' }
+                    ]
+                },
+                {
+                    id: 'group-fun',
+                    name: '娱乐',
+                    bookmarks: [
+                        { name: 'Bilibili', url: 'https://bilibili.com', icon: 'tv' }
+                    ]
+                }
+            ];
+        }
+
+        function saveGroups() {
+            localStorage.setItem('shortcuts.groups', JSON.stringify(groups));
+        }
+
+        function getCurrentBookmarks() {
+            const g = groups.find(g => g.id === currentGroupId);
+            return g ? g.bookmarks : (groups[0]?.bookmarks || []);
+        }
+
+        let groups = loadGroups();
+        let currentGroupId = groups[0]?.id || null;
+
+        // 所有分组均可删除（只要不是最后一个）
+
+        // ===== 待办系统 =====
+        const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
+
+        function migrateTodos() {
+            const saved = localStorage.getItem('todos.active');
+            if (saved) { try { return JSON.parse(saved); } catch(e) {} }
+            const old = JSON.parse(localStorage.getItem('todos_v7') || 'null');
+            if (old && Array.isArray(old)) {
+                return old.map(t => ({
+                    id: 'td-' + (t.id || Date.now()),
+                    text: t.text || '',
+                    completed: !!t.completed,
+                    priority: 'medium',
+                    dueDate: null,
+                    createdAt: typeof t.id === 'number' ? t.id : Date.now(),
+                    completedAt: t.completed ? Date.now() : null
+                }));
+            }
+            return [{ id: 'td-default', text: '开始设计第一稿', completed: false, priority: 'medium', dueDate: null, createdAt: Date.now(), completedAt: null }];
+        }
+
+        let todos = migrateTodos();
+        let todoManualOrder = JSON.parse(localStorage.getItem('todos.manualOrder') || 'false');
+        let completedSectionOpen = false;
+        let currentTodoPriority = 'medium';
+        let todoDragSrcId = null;
+
+        // 书签网格：动态列数，每页 2 行；每页填满 cols * 2 个书签后翻下一页
+        let currentCols = 4;
+        let currentItemsPerPage = 8; // 初始值对应 4 列
+
+        function getTotalPages(bms) {
+            // +1 为「添加」按钮预留位置：若当前总数正好填满整数页，再多出一页用于添加
+            return Math.max(1, Math.ceil((bms.length + 1) / currentItemsPerPage));
+        }
+
+        // 每个分组独立记忆当前页，存入 localStorage
+        let groupPages = JSON.parse(localStorage.getItem('shortcuts.pages')) || {};
+        function savePages() { localStorage.setItem('shortcuts.pages', JSON.stringify(groupPages)); }
+        function getCurrentPage() { return groupPages[currentGroupId] || 0; }
+        function setCurrentPage(n) { groupPages[currentGroupId] = n; savePages(); }
+
+        function renderBookmarks() {
+            const grid = document.getElementById('bookmarks-grid');
+            grid.style.gridTemplateColumns = `repeat(${currentCols}, 1fr)`;
+            const page = getCurrentPage();
+            const start = page * currentItemsPerPage;
+            const end = start + currentItemsPerPage;
+            const bms = getCurrentBookmarks();
+            const pageItems = bms.slice(start, end);
+
+            const totalPages = getTotalPages(bms);
+            document.getElementById('page-indicator').innerText = `${page + 1}/${totalPages}`;
+
+            let html = pageItems.map((s, index) => {
+                const globalIndex = start + index;
+                return `
+                <div class="bookmark-tile flex flex-col items-center gap-2 group relative" data-bm-idx="${globalIndex}"
+                     draggable="true"
+                     ondragstart="onBmDragStart(event, ${globalIndex})"
+                     ondragover="onBmDragOver(event, ${globalIndex})"
+                     ondragleave="onBmDragLeave(event)"
+                     ondrop="onBmDrop(event, ${globalIndex})"
+                     ondragend="onBmDragEnd()">
+                    <div class="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all z-10">
+                        <button onclick="editBookmark(${globalIndex})" class="bg-white/20 backdrop-blur-md rounded-full p-1.5 hover:bg-white/40"><i data-lucide="edit-2" class="w-3 h-3"></i></button>
+                        <button onclick="deleteBookmark(${globalIndex})" class="bg-red-500/60 backdrop-blur-md rounded-full p-1.5 hover:bg-red-600/80"><i data-lucide="x" class="w-3 h-3"></i></button>
+                    </div>
+                    <a href="${s.url}" target="_blank" draggable="false" class="apple-glass w-[84px] h-[84px] mx-auto rounded-[1.2rem] flex items-center justify-center hover-lift group-hover:bg-white/30 shadow-sm">
+                        <i data-lucide="${s.icon || 'link-2'}" class="w-6 h-6 opacity-70"></i>
+                    </a>
+                    <span class="text-[12px] opacity-30 group-hover:opacity-100 tracking-[0.1em] font-bold uppercase truncate w-full text-center transition-opacity">${s.name}</span>
+                </div>
+            `}).join('');
+
+            // 当前页未满，或当前页是最后一页（始终保留添加入口）
+            const isLastPage = (page + 1) >= totalPages;
+            if (pageItems.length < currentItemsPerPage || isLastPage) {
+                html += `
+                    <button onclick="openAddModal()" class="flex flex-col items-center gap-2 group">
+                        <div class="apple-glass w-[84px] h-[84px] mx-auto rounded-[1.2rem] flex items-center justify-center border-dashed border-white/10 hover:bg-white/10 transition-all">
+                            <i data-lucide="plus" class="w-5 h-5 opacity-20 group-hover:opacity-50"></i>
+                        </div>
+                    </button>
+                `;
+            }
+
+            grid.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        // 根据快捷方式面板宽度动态计算列数与每页数，宽度变化时重置到第一页
+        function calcAndRenderBookmarks() {
+            const panel = document.getElementById('panel-shortcuts');
+            if (!panel || panel.classList.contains('hidden')) return;
+            const wrapper = document.getElementById('bookmarks-grid-wrapper');
+            if (!wrapper) return;
+            const availableWidth = wrapper.clientWidth;
+            const newCols = Math.max(1, Math.floor(availableWidth / 100));
+            const newPerPage = newCols * 2;
+            if (newCols !== currentCols || newPerPage !== currentItemsPerPage) {
+                currentCols = newCols;
+                currentItemsPerPage = newPerPage;
+                setCurrentPage(0);
+            }
+            renderBookmarks();
+        }
+
+        let editingIndex = -1;
+
+        function populateBmGroupSelect(selectedId) {
+            const sel = document.getElementById('bm-group');
+            sel.innerHTML = groups.map(g =>
+                `<option value="${g.id}"${g.id === selectedId ? ' selected' : ''}>${g.name}</option>`
+            ).join('');
+        }
+
+        function openAddModal() {
+            editingIndex = -1;
+            document.getElementById('bm-modal-title').innerText = "添加快捷方式";
+            document.getElementById('bm-name').value = '';
+            document.getElementById('bm-url').value = '';
+            populateBmGroupSelect(currentGroupId);
+            toggleModal('bookmark-modal');
+        }
+
+        function editBookmark(index) {
+            editingIndex = index;
+            const bm = getCurrentBookmarks()[index];
+            document.getElementById('bm-modal-title').innerText = "编辑快捷方式";
+            document.getElementById('bm-name').value = bm.name;
+            document.getElementById('bm-url').value = bm.url;
+            populateBmGroupSelect(currentGroupId);
+            toggleModal('bookmark-modal');
+        }
+
+        function closeBookmarkModal() {
+            toggleModal('bookmark-modal');
+        }
+
+        function saveBookmark() {
+            const name = document.getElementById('bm-name').value.trim();
+            const url = document.getElementById('bm-url').value.trim();
+            const targetGroupId = document.getElementById('bm-group').value;
+            if (!name || !url) return;
+            const formattedUrl = url.startsWith('http') ? url : 'https://' + url;
+            const targetGroup = groups.find(g => g.id === targetGroupId);
+            if (!targetGroup) return;
+
+            if (editingIndex > -1) {
+                const srcBms = getCurrentBookmarks();
+                const existing = srcBms[editingIndex];
+                if (targetGroupId !== currentGroupId) {
+                    // 跨分组移动：从源组删除，加入目标组
+                    srcBms.splice(editingIndex, 1);
+                    targetGroup.bookmarks.push({ ...existing, name, url: formattedUrl });
+                    // 源组页码越界修正
+                    const totalPages = getTotalPages(srcBms);
+                    const page = getCurrentPage();
+                    if (page >= totalPages && page > 0) setCurrentPage(page - 1);
+                    currentGroupId = targetGroupId;
+                } else {
+                    srcBms[editingIndex] = { ...existing, name, url: formattedUrl };
+                }
+            } else {
+                targetGroup.bookmarks.push({ name, url: formattedUrl, icon: 'globe' });
+                if (targetGroupId !== currentGroupId) currentGroupId = targetGroupId;
+            }
+
+            saveGroups();
+            renderGroupTabs();
+            renderBookmarks();
+            closeBookmarkModal();
+        }
+
+        function deleteBookmark(index) {
+            const bms = getCurrentBookmarks();
+            bms.splice(index, 1);
+            saveGroups();
+            const totalPages = getTotalPages(bms);
+            const page = getCurrentPage();
+            if (page >= totalPages && page > 0) setCurrentPage(page - 1);
+            renderBookmarks();
+        }
+
+        // ===== 书签拖拽排序 =====
+        let bmDragSrcIdx = -1;
+        let bmDragSrcGroupId = null;
+        const _bmEmptyDragImg = (() => {
+            const img = new Image();
+            img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            return img;
+        })();
+        function onBmDragStart(e, idx) {
+            bmDragSrcIdx = idx;
+            bmDragSrcGroupId = currentGroupId;
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', String(idx)); } catch(_) {}
+            try { e.dataTransfer.setDragImage(_bmEmptyDragImg, 0, 0); } catch(_) {}
+            setTimeout(() => {
+                const el = document.querySelector(`.bookmark-tile[data-bm-idx="${idx}"]`);
+                if (el) el.style.opacity = '0.3';
+            }, 0);
+        }
+        function onBmDragOver(e, idx) {
+            e.preventDefault();
+            if (idx === bmDragSrcIdx || bmDragSrcIdx < 0) return;
+            document.querySelectorAll('.bookmark-tile').forEach(el => el.classList.remove('bm-drop-before','bm-drop-after'));
+            const el = document.querySelector(`.bookmark-tile[data-bm-idx="${idx}"]`);
+            if (el) {
+                const mid = el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2;
+                el.classList.add(e.clientX < mid ? 'bm-drop-before' : 'bm-drop-after');
+            }
+        }
+        function onBmDragLeave(e) { /* 由 dragover 的清除处理 */ }
+        function onBmDrop(e, targetIdx) {
+            e.preventDefault();
+            if (bmDragSrcIdx < 0 || bmDragSrcIdx === targetIdx) return;
+            const bms = getCurrentBookmarks();
+            if (bmDragSrcIdx >= bms.length || targetIdx >= bms.length) return;
+            const el = document.querySelector(`.bookmark-tile[data-bm-idx="${targetIdx}"]`);
+            let before = true;
+            if (el) {
+                const mid = el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2;
+                before = e.clientX < mid;
+            }
+            const [item] = bms.splice(bmDragSrcIdx, 1);
+            const adjustedTarget = bmDragSrcIdx < targetIdx ? targetIdx - 1 : targetIdx;
+            const insertAt = before ? adjustedTarget : adjustedTarget + 1;
+            bms.splice(insertAt, 0, item);
+            saveGroups();
+            renderBookmarks();
+        }
+        function onBmDragEnd() {
+            document.querySelectorAll('.bookmark-tile').forEach(el => {
+                el.style.opacity = '';
+                el.classList.remove('bm-drop-before','bm-drop-after');
+            });
+            document.querySelectorAll('.group-tab').forEach(el => el.classList.remove('bm-drop-target'));
+            bmDragSrcIdx = -1;
+            bmDragSrcGroupId = null;
+        }
+
+        // 拖到分组标签 —— 跨组移动
+        function onGroupTabDragOver(e, gid) {
+            if (bmDragSrcIdx < 0) return;
+            if (gid === bmDragSrcGroupId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            e.currentTarget.classList.add('bm-drop-target');
+        }
+        function onGroupTabDragLeave(e) {
+            e.currentTarget.classList.remove('bm-drop-target');
+        }
+        function onGroupTabDrop(e, gid) {
+            e.preventDefault();
+            e.currentTarget.classList.remove('bm-drop-target');
+            if (bmDragSrcIdx < 0 || !bmDragSrcGroupId || gid === bmDragSrcGroupId) return;
+            const srcGroup = groups.find(g => g.id === bmDragSrcGroupId);
+            const tgtGroup = groups.find(g => g.id === gid);
+            if (!srcGroup || !tgtGroup) return;
+            if (bmDragSrcIdx >= srcGroup.bookmarks.length) return;
+            const [item] = srcGroup.bookmarks.splice(bmDragSrcIdx, 1);
+            tgtGroup.bookmarks.push(item);
+            // 源组页码越界修正
+            const srcTotal = getTotalPages(srcGroup.bookmarks);
+            const srcPage = groupPages[bmDragSrcGroupId] || 0;
+            if (srcPage >= srcTotal && srcPage > 0) groupPages[bmDragSrcGroupId] = srcPage - 1;
+            saveGroups(); savePages();
+            renderBookmarks();
+        }
+
+        function prevPage() {
+            const page = getCurrentPage();
+            if (page > 0) { setCurrentPage(page - 1); renderBookmarks(); }
+        }
+
+        function nextPage() {
+            const page = getCurrentPage();
+            const totalPages = getTotalPages(getCurrentBookmarks());
+            if (page < totalPages - 1) { setCurrentPage(page + 1); renderBookmarks(); }
+        }
+
+        // ===== 分组标签栏 =====
+        function renderGroupTabs() {
+            const container = document.getElementById('group-tabs');
+            let html = groups.map(g => {
+                const active = g.id === currentGroupId ? ' active' : '';
+                return `<button id="group-tab-${g.id}" class="group-tab${active}" onclick="switchGroup('${g.id}')" ondblclick="startRenameGroup('${g.id}', event)" oncontextmenu="showGroupCtxMenu(event,'${g.id}')" ondragover="onGroupTabDragOver(event,'${g.id}')" ondragleave="onGroupTabDragLeave(event)" ondrop="onGroupTabDrop(event,'${g.id}')" data-gid="${g.id}">${g.name}</button>`;
+            }).join('');
+            html += `<button onclick="openNewGroupModal()" class="ml-auto flex-shrink-0 opacity-30 hover:opacity-70 transition-opacity p-1 rounded-lg hover:bg-white/10" title="新建分组"><i data-lucide="plus" class="w-3.5 h-3.5"></i></button>`;
+            container.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        function switchGroup(id) {
+            currentGroupId = id;
+            renderGroupTabs();
+            renderBookmarks();
+        }
+
+        // ===== 新建 / 重命名分组 =====
+        let ctxGroupId = null;
+
+        function openNewGroupModal() {
+            document.getElementById('group-modal-title').innerText = '新建分组';
+            document.getElementById('group-name-input').value = '';
+            toggleModal('group-name-modal');
+            setTimeout(() => document.getElementById('group-name-input').focus(), 100);
+        }
+
+        function confirmGroupName() {
+            const name = document.getElementById('group-name-input').value.trim();
+            if (!name) return;
+            const id = 'group-' + Date.now();
+            groups.push({ id, name, bookmarks: [] });
+            saveGroups();
+            switchGroup(id);
+            toggleModal('group-name-modal');
+        }
+
+        // --- 分组双击/右键重命名（在位编辑，仿笔记）---
+        function startRenameGroup(id, e) {
+            if (e && e.stopPropagation) e.stopPropagation();
+            const tab = document.getElementById('group-tab-' + id);
+            const grp = groups.find(g => g.id === id);
+            if (!tab || !grp) return;
+            const oldName = grp.name;
+            tab.contentEditable = 'true';
+            tab.focus();
+            const range = document.createRange();
+            range.selectNodeContents(tab);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            const finish = () => {
+                tab.contentEditable = 'false';
+                const newName = tab.innerText.trim() || oldName;
+                grp.name = newName;
+                tab.innerText = newName;
+                saveGroups();
+            };
+            tab.onblur = finish;
+            tab.onkeydown = (ev) => {
+                if (ev.key === 'Enter') { ev.preventDefault(); tab.blur(); }
+                if (ev.key === 'Escape') { tab.innerText = oldName; tab.onblur = null; tab.blur(); }
+            };
+        }
+
+        function startRenameGroupFromCtx() {
+            hideGroupCtxMenu();
+            const id = ctxGroupId;
+            setTimeout(() => startRenameGroup(id, null), 50);
+        }
+
+        // ===== 右键 / 长按菜单 =====
+        function showGroupCtxMenu(e, groupId, refEl) {
+            if (e) e.preventDefault();
+            ctxGroupId = groupId;
+            const menu = document.getElementById('group-ctx-menu');
+            const canDelete = groups.length > 1;
+            document.getElementById('ctx-delete-btn').style.display = canDelete ? '' : 'none';
+            menu.classList.remove('hidden');
+            const x = e ? e.clientX : refEl.getBoundingClientRect().left;
+            const y = e ? e.clientY : refEl.getBoundingClientRect().bottom + 4;
+            menu.style.left = Math.min(x, window.innerWidth - 150) + 'px';
+            menu.style.top = (y + 4) + 'px';
+        }
+
+        function hideGroupCtxMenu() {
+            document.getElementById('group-ctx-menu').classList.add('hidden');
+        }
+
+        function confirmDeleteGroup() {
+            hideGroupCtxMenu();
+            if (groups.length <= 1) return;
+            const grp = groups.find(g => g.id === ctxGroupId);
+            if (!grp) return;
+
+            document.getElementById('del-group-title').innerText = `删除「${grp.name}」`;
+            const moveSection = document.getElementById('del-group-move-section');
+            const targetSel = document.getElementById('del-group-target');
+
+            if (grp.bookmarks.length > 0) {
+                document.getElementById('del-group-msg').innerText =
+                    `该分组内有 ${grp.bookmarks.length} 个书签，删除后无法恢复。可将书签保留到其他分组。`;
+                targetSel.innerHTML = `<option value="">不保留书签</option>` +
+                    groups.filter(g => g.id !== ctxGroupId)
+                          .map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+                moveSection.classList.remove('hidden');
+            } else {
+                document.getElementById('del-group-msg').innerText =
+                    `确认删除分组「${grp.name}」？此操作不可撤销。`;
+                moveSection.classList.add('hidden');
+            }
+            toggleModal('delete-group-modal');
+        }
+
+        function executeDeleteGroup() {
+            const targetId = document.getElementById('del-group-target').value;
+            const grp = groups.find(g => g.id === ctxGroupId);
+            if (grp && targetId) {
+                const targetGroup = groups.find(g => g.id === targetId);
+                if (targetGroup) targetGroup.bookmarks.push(...grp.bookmarks);
+            }
+            groups = groups.filter(g => g.id !== ctxGroupId);
+            delete groupPages[ctxGroupId];
+            saveGroups(); savePages();
+            if (currentGroupId === ctxGroupId) currentGroupId = groups[0].id;
+            toggleModal('delete-group-modal');
+            renderGroupTabs();
+            renderBookmarks();
+        }
+
+        function saveTodos() { localStorage.setItem('todos.active', JSON.stringify(todos)); }
+
+        function archiveCompleted(todo) {
+            let arc = JSON.parse(localStorage.getItem('todos.completed') || '[]');
+            arc = arc.filter(a => a.id !== todo.id);
+            arc.push({ id: todo.id, text: todo.text, priority: todo.priority, completedAt: todo.completedAt });
+            const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            arc = arc.filter(a => a.completedAt > cutoff);
+            localStorage.setItem('todos.completed', JSON.stringify(arc));
+        }
+
+        function getSortedActive(active) {
+            if (todoManualOrder) return active;
+            return [...active].sort((a, b) => {
+                const pd = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+                if (pd !== 0) return pd;
+                if (!a.dueDate && !b.dueDate) return 0;
+                if (!a.dueDate) return 1;
+                if (!b.dueDate) return -1;
+                return new Date(a.dueDate) - new Date(b.dueDate);
+            });
+        }
+
+        function isDueSoon(dueDate) {
+            if (!dueDate) return false;
+            const diff = new Date(dueDate) - new Date();
+            return diff >= 0 && diff < 24 * 60 * 60 * 1000;
+        }
+
+        function buildTodoItemHtml(t, isDone) {
+            const dueSoon = !isDone && isDueSoon(t.dueDate);
+            const dotColor = { high: 'bg-red-500', medium: 'bg-amber-400', low: 'bg-sky-400' }[t.priority] || 'bg-white/30';
+            const priorityDot = isDone ? '' : `<button onclick="showTodoPriorityMenu(event, '${t.id}')" class="w-1.5 h-1.5 rounded-full ${dotColor} flex-shrink-0 mt-[6px] cursor-pointer hover:scale-150 transition-transform" title="修改优先级"></button>`;
+            const dueDateHtml = (t.dueDate && !isDone) ? `<span class="block text-[9px] font-black tracking-widest mt-0.5 ${dueSoon ? 'text-orange-400' : 'opacity-30'}">${new Date(t.dueDate).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</span>` : '';
+            const dragAttrs = isDone ? '' : `draggable="true" ondragstart="onTodoDragStart(event,'${t.id}')" ondragover="onTodoDragOver(event,'${t.id}')" ondragleave="onTodoDragLeave(event)" ondrop="onTodoDrop(event,'${t.id}')" ondragend="onTodoDragEnd()"`;
+            const highBorder = (t.priority === 'high' && !isDone) ? 'border-l-2 border-red-500/60' : '';
+            return `<div class="todo-item flex items-start justify-between gap-2 group/item px-3 py-2.5 rounded-2xl hover:bg-white/5 transition-all ${isDone ? 'opacity-50' : ''} ${highBorder}" data-id="${t.id}" ${dragAttrs}>
+                <div class="flex items-start gap-2.5 flex-1 min-w-0">
+                    ${priorityDot}
+                    ${isDone
+                        ? `<div class="todo-check done w-5 h-5 rounded-full border border-transparent flex items-center justify-center flex-shrink-0 mt-[1px] transition-all cursor-pointer relative overflow-hidden shadow-[0_0_10px_rgba(16,185,129,0.4)]"
+                               onpointerdown="startHoldComplete(event, '${t.id}')"
+                               onpointerup="cancelHoldComplete(event)"
+                               onpointerleave="cancelHoldComplete(event)"
+                               onpointercancel="cancelHoldComplete(event)"><span class="todo-check-fill"></span><i data-lucide="check" class="w-3 h-3 text-white relative"></i></div>`
+                        : `<div class="todo-check w-5 h-5 rounded-full border border-white/20 flex items-center justify-center flex-shrink-0 mt-[1px] transition-all cursor-pointer relative overflow-hidden group-hover/item:border-white/50"
+                               onpointerdown="startHoldComplete(event, '${t.id}')"
+                               onpointerup="cancelHoldComplete(event)"
+                               onpointerleave="cancelHoldComplete(event)"
+                               onpointercancel="cancelHoldComplete(event)"><span class="todo-check-fill"></span></div>`
+                    }
+                    <div class="flex-1 min-w-0">
+                        <span class="todo-text text-sm font-light tracking-wide leading-snug cursor-text outline-none ${isDone ? 'line-through opacity-60' : 'opacity-80'}" onclick="startEditTodo('${t.id}', event)">${t.text}</span>
+                        ${dueDateHtml}
+                    </div>
+                </div>
+                <button onclick="deleteTodoById('${t.id}')" class="opacity-0 group-hover/item:opacity-30 hover:!opacity-100 hover:text-red-400 transition-all p-1 flex-shrink-0 mt-0.5">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+            </div>`;
+        }
+
+        // --- 点击优先级小点弹出菜单 ---
+        let priorityMenuTodoId = null;
+        function showTodoPriorityMenu(e, id) {
+            e.stopPropagation();
+            priorityMenuTodoId = id;
+            const menu = document.getElementById('todo-priority-menu');
+            menu.classList.remove('hidden');
+            const rect = e.currentTarget.getBoundingClientRect();
+            const menuW = 110;
+            const x = Math.min(rect.left, window.innerWidth - menuW - 8);
+            const y = rect.bottom + 6;
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+        }
+        function hideTodoPriorityMenu() {
+            document.getElementById('todo-priority-menu').classList.add('hidden');
+            priorityMenuTodoId = null;
+        }
+        function changeTodoPriority(level) {
+            const t = todos.find(t => t.id === priorityMenuTodoId);
+            hideTodoPriorityMenu();
+            if (!t || t.priority === level) return;
+            t.priority = level;
+            saveTodos();
+            renderTodos();
+        }
+        document.addEventListener('click', (e) => {
+            if (!document.getElementById('todo-priority-menu').contains(e.target)) hideTodoPriorityMenu();
+        });
+
+        function renderTodos() {
+            const active = todos.filter(t => !t.completed);
+            const done   = todos.filter(t => t.completed);
+            const sorted = getSortedActive(active);
+
+            const list = document.getElementById('todo-list');
+            list.innerHTML = sorted.length
+                ? sorted.map(t => buildTodoItemHtml(t, false)).join('')
+                : `<div class="flex flex-col items-center justify-center opacity-10 py-8"><i data-lucide="list-checks" class="w-10 h-10 mb-3"></i><p class="text-[10px] uppercase tracking-widest font-black">Empty List</p></div>`;
+
+            const section = document.getElementById('todo-completed-section');
+            const countEl = document.getElementById('todo-completed-count');
+            const doneList = document.getElementById('todo-completed-list');
+            const arrow = document.getElementById('todo-completed-arrow');
+
+            if (done.length > 0) {
+                section.classList.remove('hidden');
+                countEl.textContent = done.length;
+                if (completedSectionOpen) {
+                    doneList.classList.remove('hidden');
+                    doneList.innerHTML = done.map(t => buildTodoItemHtml(t, true)).join('');
+                    if (arrow) arrow.style.transform = 'rotate(180deg)';
+                } else {
+                    doneList.classList.add('hidden');
+                    if (arrow) arrow.style.transform = '';
+                }
+            } else {
+                section.classList.add('hidden');
+            }
+
+            const sortBtn = document.getElementById('todo-sort-btn');
+            if (sortBtn) sortBtn.style.opacity = todoManualOrder ? '0.4' : '0';
+
+            lucide.createIcons();
+        }
+
+        function toggleCompletedSection() {
+            completedSectionOpen = !completedSectionOpen;
+            renderTodos();
+        }
+
+        function startEditTodo(id, e) {
+            if (e) e.stopPropagation();
+            const t = todos.find(x => x.id === id);
+            if (!t) return;
+            const item = document.querySelector(`.todo-item[data-id="${id}"]`);
+            if (!item) return;
+            const span = item.querySelector('.todo-text');
+            if (!span || span.isContentEditable) return;
+            const oldText = t.text;
+            const wasDraggable = item.getAttribute('draggable');
+            item.setAttribute('draggable', 'false');
+            span.contentEditable = 'true';
+            span.focus();
+            const range = document.createRange();
+            range.selectNodeContents(span);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            const finish = (commit) => {
+                span.onblur = null;
+                span.onkeydown = null;
+                span.contentEditable = 'false';
+                if (wasDraggable !== null) item.setAttribute('draggable', wasDraggable);
+                if (commit) {
+                    const newText = span.innerText.trim();
+                    if (newText && newText !== oldText) {
+                        t.text = newText;
+                        saveTodos();
+                    }
+                }
+                renderTodos();
+            };
+            span.onblur = () => finish(true);
+            span.onkeydown = (ev) => {
+                if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+                else if (ev.key === 'Escape') { ev.preventDefault(); span.innerText = oldText; finish(false); }
+            };
+        }
+
+        function setTodoPriority(p) {
+            currentTodoPriority = p;
+            document.querySelectorAll('[data-priority]').forEach(btn => {
+                const active = btn.dataset.priority === p;
+                btn.style.opacity = active ? '1' : '0.4';
+                btn.style.background = active ? 'rgba(255,255,255,0.15)' : 'transparent';
+            });
+        }
+
+        function addTodo() {
+            currentTodoPriority = 'medium';
+            document.getElementById('todo-input').value = '';
+            document.getElementById('todo-due').value = '';
+            setTodoPriority('medium');
+            toggleModal('todo-modal');
+            setTimeout(() => document.getElementById('todo-input').focus(), 100);
+        }
+
+        function confirmAddTodo() {
+            const text = document.getElementById('todo-input').value.trim();
+            if (!text) return;
+            const todo = {
+                id: 'td-' + Date.now(),
+                text,
+                completed: false,
+                priority: currentTodoPriority,
+                dueDate: document.getElementById('todo-due').value || null,
+                createdAt: Date.now(),
+                completedAt: null
+            };
+            todos.push(todo);
+            saveTodos();
+            renderTodos();
+            toggleModal('todo-modal');
+        }
+
+        function toggleTodo(id) {
+            const t = todos.find(t => t.id === id);
+            if (!t) return;
+            t.completed = !t.completed;
+            t.completedAt = t.completed ? Date.now() : null;
+            if (t.completed) {
+                archiveCompleted(t);
+                if (typeof changePetMood === 'function') { changePetMood(+1); touchPetInteract(); }
+                document.dispatchEvent(new CustomEvent('pet:celebrate', { detail: { duration: 1500 } }));
+            }
+            saveTodos();
+            renderTodos();
+        }
+
+        // 长按切换完成状态：按住 1.5s 触发翻转，松开/移出即取消
+        // 未完成 → 水位 0%→100% 涨起；已完成 → 水位 100%→0% 回落
+        let _holdTodoTimer = null;
+        let _holdTodoEl = null;
+        function startHoldComplete(e, id) {
+            e.preventDefault();
+            const circle = e.currentTarget;
+            cancelHoldComplete();
+            _holdTodoEl = circle;
+            circle.classList.add('holding');
+            try { circle.setPointerCapture(e.pointerId); } catch(_) {}
+            _holdTodoTimer = setTimeout(() => {
+                _holdTodoTimer = null;
+                if (_holdTodoEl) _holdTodoEl.classList.remove('holding');
+                _holdTodoEl = null;
+                const t = todos.find(x => x.id === id);
+                if (!t) return;
+                const willComplete = !t.completed;
+                t.completed = willComplete;
+                t.completedAt = willComplete ? Date.now() : null;
+                if (willComplete) {
+                    archiveCompleted(t);
+                    if (typeof changePetMood === 'function') { changePetMood(+1); touchPetInteract(); }
+                    document.dispatchEvent(new CustomEvent('pet:celebrate', { detail: { duration: 1500 } }));
+                }
+                saveTodos();
+                renderTodos();
+            }, 1500);
+        }
+        function cancelHoldComplete() {
+            if (_holdTodoTimer) { clearTimeout(_holdTodoTimer); _holdTodoTimer = null; }
+            if (_holdTodoEl) { _holdTodoEl.classList.remove('holding'); _holdTodoEl = null; }
+        }
+
+        function deleteTodoById(id) {
+            todos = todos.filter(t => t.id !== id);
+            saveTodos();
+            renderTodos();
+        }
+
+        function resetTodoSort() {
+            todoManualOrder = false;
+            localStorage.setItem('todos.manualOrder', 'false');
+            renderTodos();
+        }
+
+        // ===== 拖拽排序 =====
+        function onTodoDragStart(e, id) {
+            todoDragSrcId = id;
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => {
+                const el = document.querySelector('.todo-item[data-id="' + id + '"]');
+                if (el) el.style.opacity = '0.3';
+            }, 0);
+        }
+
+        function onTodoDragOver(e, id) {
+            e.preventDefault();
+            if (id === todoDragSrcId) return;
+            document.querySelectorAll('.todo-item').forEach(el => { el.style.borderTop = ''; el.style.borderBottom = ''; });
+            const el = document.querySelector('.todo-item[data-id="' + id + '"]');
+            if (el) {
+                const mid = el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
+                el.style[e.clientY < mid ? 'borderTop' : 'borderBottom'] = '2px solid rgba(255,255,255,0.55)';
+            }
+        }
+
+        function onTodoDragLeave(e) { /* 由 dragover 的清除处理 */ }
+
+        function onTodoDrop(e, targetId) {
+            e.preventDefault();
+            if (todoDragSrcId === targetId) return;
+            const srcIdx = todos.findIndex(t => t.id === todoDragSrcId);
+            const tgtIdx = todos.findIndex(t => t.id === targetId);
+            if (srcIdx === -1 || tgtIdx === -1) return;
+            const el = document.querySelector('.todo-item[data-id="' + targetId + '"]');
+            let before = true;
+            if (el) {
+                const mid = el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2;
+                before = e.clientY < mid;
+            }
+            const [item] = todos.splice(srcIdx, 1);
+            const newTgt = todos.findIndex(t => t.id === targetId);
+            todos.splice(before ? newTgt : newTgt + 1, 0, item);
+            todoManualOrder = true;
+            localStorage.setItem('todos.manualOrder', 'true');
+            saveTodos();
+            renderTodos();
+        }
+
+        function onTodoDragEnd() {
+            document.querySelectorAll('.todo-item').forEach(el => { el.style.opacity = ''; el.style.borderTop = ''; el.style.borderBottom = ''; });
+            todoDragSrcId = null;
+        }
+
+        const audioSources = {
+            rain: 'https://raw.githubusercontent.com/isyuricunha/rain-for-relax/main/assets/rain-chill.mp3'
+        };
+
+        function changeAudio(type) {
+            const audio = document.getElementById('bg-audio');
+            const mainIcon = document.getElementById('audio-main-icon');
+
+            if (type === 'none') {
+                audio.pause();
+                mainIcon.setAttribute('data-lucide', 'music');
+            } else {
+                audio.src = audioSources[type];
+                audio.play();
+                const icons = { rain: 'cloud-rain' };
+                mainIcon.setAttribute('data-lucide', icons[type]);
+            }
+            lucide.createIcons();
+        }
+
+        // ===== 用户自定义音轨（URL 持久化，文件仅本次会话） =====
+        const CUSTOM_AUDIO_KEY = 'audio.custom';
+        function loadCustomAudio() {
+            try { return JSON.parse(localStorage.getItem(CUSTOM_AUDIO_KEY)) || []; } catch { return []; }
+        }
+        function saveCustomAudio(list) {
+            // 仅持久化 URL 类型（blob URL 刷新即失效，不保存）
+            const persisted = list.filter(t => t.kind === 'url');
+            localStorage.setItem(CUSTOM_AUDIO_KEY, JSON.stringify(persisted));
+        }
+        let customAudioList = loadCustomAudio();
+
+        function playCustomAudio(id) {
+            const t = customAudioList.find(x => x.id === id);
+            if (!t) return;
+            const audio = document.getElementById('bg-audio');
+            const mainIcon = document.getElementById('audio-main-icon');
+            audio.src = t.src;
+            audio.play().catch(err => alert('播放失败：' + err.message));
+            mainIcon.setAttribute('data-lucide', t.kind === 'file' ? 'file-music' : 'music');
+            lucide.createIcons();
+        }
+
+        function removeCustomAudio(id, e) {
+            if (e) e.stopPropagation();
+            customAudioList = customAudioList.filter(x => x.id !== id);
+            saveCustomAudio(customAudioList);
+            renderCustomAudioList();
+        }
+
+        function renderCustomAudioList() {
+            const container = document.getElementById('custom-audio-list');
+            if (!container) return;
+            container.innerHTML = customAudioList.map(t => `
+                <div class="group flex items-center hover:bg-white/10 transition-colors">
+                    <button onclick="playCustomAudio('${t.id}')" class="flex-1 text-left px-6 py-3 text-xs uppercase tracking-widest font-bold flex items-center gap-3 min-w-0">
+                        <i data-lucide="${t.kind === 'file' ? 'file-music' : 'link'}" class="w-4 h-4 opacity-50 flex-shrink-0"></i>
+                        <span class="truncate">${t.name.replace(/</g,'&lt;')}</span>
+                    </button>
+                    <button onclick="removeCustomAudio('${t.id}', event)" class="px-3 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity" title="删除">
+                        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+            `).join('');
+            lucide.createIcons();
+        }
+
+        function addCustomAudioUrl(e) {
+            if (e) e.stopPropagation();
+            const raw = prompt('输入音频 URL（mp3 / ogg / wav 等）:');
+            if (!raw) return;
+            let parsed;
+            try { parsed = new URL(raw); } catch { alert('无效的 URL'); return; }
+            if (!/^https?:$/.test(parsed.protocol)) { alert('仅支持 http(s) 链接'); return; }
+            const fallback = decodeURIComponent(parsed.pathname.split('/').pop() || '') || parsed.hostname;
+            customAudioList.push({ id: 'aud-' + Date.now(), kind: 'url', name: fallback, src: parsed.href });
+            saveCustomAudio(customAudioList);
+            renderCustomAudioList();
+        }
+
+        function addCustomAudioFile(e) {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const blobUrl = URL.createObjectURL(file);
+            customAudioList.push({ id: 'aud-' + Date.now(), kind: 'file', name: file.name, src: blobUrl });
+            saveCustomAudio(customAudioList);
+            renderCustomAudioList();
+            e.target.value = '';
+        }
+
+        renderCustomAudioList();
+
+        function updateClock() {
+            const now = new Date();
+            const h = now.getHours().toString().padStart(2, '0');
+            const m = now.getMinutes().toString().padStart(2, '0');
+            document.getElementById('time').innerText = `${h}:${m}`;
+            document.getElementById('date').innerText = now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'long' });
+        }
+        setInterval(updateClock, 1000); 
+        updateClock();
+
+        async function fetchWeather() {
+            try {
+                // 使用浏览器地理位置，如果失败则回退到北京
+                navigator.geolocation.getCurrentPosition(async (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+                    const data = await res.json();
+                    const weather = data.current_weather;
+                    document.getElementById('weather-temp').innerText = `${Math.round(weather.temperature)}°C`;
+                    document.getElementById('weather-desc').innerText = getWeatherDesc(weather.weathercode);
+                }, () => {
+                    // 回退方案
+                    document.getElementById('weather-desc').innerText = "需要定位权限";
+                });
+            } catch (e) {
+                console.error("Weather fetch failed");
+            }
+        }
+
+        function getWeatherDesc(code) {
+            const map = {
+                0: '晴', 1: '晴间多云', 2: '多云', 3: '阴',
+                45: '雾', 48: '冻雾',
+                51: '小毛雨', 53: '毛毛雨', 55: '大毛雨',
+                56: '冻毛雨', 57: '强冻毛雨',
+                61: '小雨', 63: '中雨', 65: '大雨',
+                66: '冻雨', 67: '强冻雨',
+                71: '小雪', 73: '中雪', 75: '大雪', 77: '米雪',
+                80: '阵雨', 81: '强阵雨', 82: '暴雨',
+                85: '阵雪', 86: '强阵雪',
+                95: '雷雨', 96: '雷雨夹冰雹', 99: '强雷雨夹冰雹'
+            };
+            return map[code] || '多云';
+        }
+        fetchWeather();
+        setInterval(fetchWeather, 1800000); // 每30分钟更新一次
+
+        const HITOKOTO_CUSTOM_KEY = 'hitokoto.custom';
+        const HITOKOTO_LAST_API_KEY = 'hitokoto.lastApi';
+        const HITOKOTO_SOURCE_KEY = 'hitokoto.source';
+        const HITOKOTO_FETCH_TIMEOUT = 5000;
+
+        function fetchWithTimeout(url, opts = {}) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), HITOKOTO_FETCH_TIMEOUT);
+            return fetch(url, { ...opts, signal: controller.signal })
+                .finally(() => clearTimeout(timer));
+        }
+
+        const HITOKOTO_SOURCES = {
+            jinrishici: {
+                name: '今日诗词',
+                fetch: async () => {
+                    let token = localStorage.getItem('jinrishici.token');
+                    if (!token) {
+                        const t = await fetchWithTimeout('https://v2.jinrishici.com/token').then(r => r.json());
+                        if (t && t.status === 'success' && t.data) {
+                            token = t.data;
+                            localStorage.setItem('jinrishici.token', token);
+                        }
+                    }
+                    const resp = await fetchWithTimeout('https://v2.jinrishici.com/one.json', {
+                        headers: token ? { 'X-User-Token': token } : {}
+                    });
+                    const j = await resp.json();
+                    const d = (j && j.data) || {};
+                    const origin = d.origin || {};
+                    return {
+                        text: d.content || '',
+                        from: `— ${origin.author || ''}「${origin.title || ''}」`
+                    };
+                }
+            },
+            hitokoto: {
+                name: '一言',
+                fetch: async () => {
+                    const d = await fetchWithTimeout('https://v1.hitokoto.cn').then(r => r.json());
+                    return {
+                        text: d.hitokoto,
+                        from: `— ${d.from_who || ''} 「${d.from}」`
+                    };
+                }
+            },
+            zenquotes: {
+                name: '英文名言',
+                fetch: async () => {
+                    const arr = await fetchWithTimeout('https://zenquotes.io/api/random').then(r => r.json());
+                    const d = Array.isArray(arr) ? arr[0] : arr;
+                    return {
+                        text: d.q || '',
+                        from: `— ${d.a || ''}`
+                    };
+                }
+            },
+            githubzen: {
+                name: 'Zen 禅言',
+                fetch: async () => {
+                    const t = await fetchWithTimeout('https://api.github.com/zen').then(r => r.text());
+                    return { text: t, from: '— GitHub Zen' };
+                }
+            }
+        };
+
+        function getHitokotoSource() {
+            const s = localStorage.getItem(HITOKOTO_SOURCE_KEY);
+            return HITOKOTO_SOURCES[s] ? s : 'hitokoto';
+        }
+
+        function setHitokotoSource(key, e) {
+            if (e) e.stopPropagation();
+            if (!HITOKOTO_SOURCES[key]) return;
+            localStorage.setItem(HITOKOTO_SOURCE_KEY, key);
+            localStorage.removeItem(HITOKOTO_CUSTOM_KEY);
+            updateHitokotoSourceUI();
+            fetchHitokoto();
+        }
+
+        function updateHitokotoSourceUI() {
+            const curr = getHitokotoSource();
+            document.querySelectorAll('.src-item').forEach(btn => {
+                const check = btn.querySelector('.src-check');
+                if (check) check.style.opacity = (btn.dataset.src === curr) ? '1' : '0';
+            });
+        }
+
+        function showHitokoto(text, from) {
+            const textEl = document.getElementById('hitokoto');
+            const fromEl = document.getElementById('hitokoto-from');
+            textEl.innerText = text;
+            fromEl.innerText = from || '';
+            textEl.style.opacity = "1";
+            fromEl.style.opacity = "1";
+        }
+
+        async function tryFetchWithFallback() {
+            const primary = getHitokotoSource();
+            const order = [primary, ...Object.keys(HITOKOTO_SOURCES).filter(k => k !== primary)];
+            let lastErr;
+            for (const key of order) {
+                try {
+                    const result = await HITOKOTO_SOURCES[key].fetch();
+                    if (result && result.text) return result;
+                } catch (err) {
+                    lastErr = err;
+                    console.warn(`[hitokoto] source "${key}" failed:`, err);
+                }
+            }
+            throw lastErr || new Error('all sources failed');
+        }
+
+        async function fetchHitokoto() {
+            updateHitokotoSourceUI();
+            const customRaw = localStorage.getItem(HITOKOTO_CUSTOM_KEY);
+            if (customRaw) {
+                try {
+                    const custom = JSON.parse(customRaw);
+                    if (custom && custom.text) {
+                        showHitokoto(custom.text, '');
+                        return;
+                    }
+                } catch {}
+            }
+
+            try {
+                const { text, from } = await tryFetchWithFallback();
+                localStorage.setItem(HITOKOTO_LAST_API_KEY, JSON.stringify({ text, from }));
+                showHitokoto(text, from);
+            } catch (err) {
+                console.error('Failed to fetch hitokoto:', err);
+                const lastRaw = localStorage.getItem(HITOKOTO_LAST_API_KEY);
+                if (lastRaw) {
+                    try {
+                        const last = JSON.parse(lastRaw);
+                        if (last && last.text) { showHitokoto(last.text, last.from); return; }
+                    } catch {}
+                }
+                showHitokoto('愿你今日，心中有光。', '— Ayu Tab');
+            }
+        }
+        fetchHitokoto();
+
+        async function refreshHitokoto(e) {
+            if (e) e.stopPropagation();
+            localStorage.removeItem(HITOKOTO_CUSTOM_KEY);
+            try {
+                const { text, from } = await tryFetchWithFallback();
+                localStorage.setItem(HITOKOTO_LAST_API_KEY, JSON.stringify({ text, from }));
+                showHitokoto(text, from);
+            } catch (err) {
+                console.error('Failed to refresh hitokoto:', err);
+            }
+        }
+
+        function closeHitokoto(e) {
+            if (e) e.stopPropagation();
+            if (panelVisibility.hitokoto) togglePanel('hitokoto');
+        }
+
+        function customizeHitokoto(e) {
+            if (e) e.stopPropagation();
+            const textEl = document.getElementById('hitokoto');
+            const fromEl = document.getElementById('hitokoto-from');
+            if (textEl.isContentEditable) return;
+            const oldText = textEl.innerText;
+            textEl.contentEditable = 'true';
+            textEl.focus();
+            const range = document.createRange();
+            range.selectNodeContents(textEl);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            const finish = (commit) => {
+                textEl.onblur = null;
+                textEl.onkeydown = null;
+                textEl.contentEditable = 'false';
+                if (!commit) {
+                    textEl.innerText = oldText;
+                    return;
+                }
+                const newText = textEl.innerText.trim();
+                if (!newText) {
+                    localStorage.removeItem(HITOKOTO_CUSTOM_KEY);
+                    fetchHitokoto();
+                    return;
+                }
+                fromEl.innerText = '';
+                localStorage.setItem(HITOKOTO_CUSTOM_KEY, JSON.stringify({ text: newText }));
+            };
+            textEl.onblur = () => finish(true);
+            textEl.onkeydown = (ev) => {
+                if (ev.key === 'Enter') { ev.preventDefault(); textEl.blur(); }
+                else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); textEl.blur(); }
+            };
+        }
+
+        let currentEngine = 'baidu';
+
+        function toggleEngineDropdown(e) {
+            e.stopPropagation();
+            document.getElementById('engine-dropdown').classList.toggle('active');
+        }
+
+        function setSearchEngine(engine) {
+            currentEngine = engine;
+            const names = { baidu: 'Baidu', google: 'Google', bing: 'Bing' };
+            document.getElementById('current-engine-name').innerText = names[engine];
+            document.getElementById('engine-dropdown').classList.remove('active');
+        }
+
+        // 点击其他地方关闭下拉菜单
+        document.addEventListener('click', () => {
+            document.getElementById('engine-dropdown').classList.remove('active');
+        });
+
+        function performSearch() {
+            const q = document.getElementById('search-input').value.trim();
+            if(!q) return;
+            const urls = {
+                baidu: `https://www.baidu.com/s?wd=${encodeURIComponent(q)}`,
+                google: `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+                bing: `https://www.bing.com/search?q=${encodeURIComponent(q)}`
+            };
+            window.open(urls[currentEngine], '_blank');
+        }
+
+
+        function setActiveBgModeUI(mode) {
+            const btnUrl = document.getElementById('bg-mode-url');
+            const btnLocal = document.getElementById('bg-mode-local');
+            const btnPresets = document.getElementById('bg-mode-presets');
+            const paneUrl = document.getElementById('bg-pane-url');
+            const paneLocal = document.getElementById('bg-pane-local');
+            const panePresets = document.getElementById('bg-pane-presets');
+
+            const activeCls = 'bg-white/15';
+            btnUrl.classList.toggle(activeCls, mode === 'url');
+            btnLocal.classList.toggle(activeCls, mode === 'local');
+            btnPresets.classList.toggle(activeCls, mode === 'presets');
+            
+            paneUrl.classList.toggle('hidden', mode !== 'url');
+            paneLocal.classList.toggle('hidden', mode !== 'local');
+            panePresets.classList.toggle('hidden', mode !== 'presets');
+
+            if(mode === 'presets') renderPresets();
+        }
+
+        const presetImages = [
+            'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&q=80&w=1200',
+            'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?auto=format&fit=crop&q=80&w=1200',
+            'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=1200',
+            'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&q=80&w=1200',
+            'https://images.unsplash.com/photo-1447752875215-b2761acb3c5d?auto=format&fit=crop&q=80&w=1200',
+            'https://images.unsplash.com/photo-1433086566291-f1a5c2463dcd?auto=format&fit=crop&q=80&w=1200'
+        ];
+
+        function renderPresets() {
+            const grid = document.getElementById('presets-grid');
+            grid.innerHTML = presetImages.map(url => `
+                <div onclick="applyPresetBg('${url}')" class="aspect-video rounded-xl overflow-hidden cursor-pointer hover:ring-2 ring-white/50 transition-all bg-white/5">
+                    <img src="${url}" class="w-full h-full object-cover">
+                </div>
+            `).join('');
+        }
+
+        function applyPresetBg(url) {
+            applyBgImageUrl(url);
+            localStorage.setItem('workbench_bg_mode_v8', 'presets');
+            localStorage.setItem('workbench_bg_preset_v8', url);
+            toggleModal('settings-modal');
+        }
+
+        function setBgMode(mode) {
+            localStorage.setItem('workbench_bg_mode_v8', mode);
+            setActiveBgModeUI(mode);
+            lucide.createIcons();
+        }
+
+        function applyBgImageUrl(url) {
+            document.getElementById('bg-overlay').style.backgroundImage = `url('${url}')`;
+        }
+
+        function applyBgFromUrl() {
+            const raw = (document.getElementById('bg-url').value || '').trim();
+            if(!raw) return;
+            const url = raw.startsWith('http') ? raw : `https://${raw}`;
+            applyBgImageUrl(url);
+            localStorage.setItem('workbench_bg_mode_v8', 'url');
+            localStorage.setItem('workbench_bg_url_v8', url);
+            toggleModal('settings-modal');
+        }
+
+        function updateBgFileLabel() {
+            const input = document.getElementById('bg-file');
+            const label = document.getElementById('bg-file-label');
+            if (!input || !label) return;
+            const f = input.files && input.files[0];
+            label.innerText = f ? f.name : '选择本地图片';
+            label.classList.toggle('opacity-70', !f);
+            label.classList.toggle('opacity-100', !!f);
+        }
+
+        function applyBgFromLocal() {
+            const input = document.getElementById('bg-file');
+            const file = input.files && input.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                applyBgImageUrl(dataUrl);
+                localStorage.setItem('workbench_bg_mode_v8', 'local');
+                localStorage.setItem('workbench_bg_local_v8', dataUrl);
+                toggleModal('settings-modal');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function toggleModal(id) { 
+            document.getElementById(id).classList.toggle('active'); 
+        }
+
+        // 点击遮罩层关闭弹窗（点内容区域不关闭）
+        // 根据配置渲染作者下拉菜单
+        (function initAuthorMenu() {
+            const nameEl = document.getElementById('author-dd-name');
+            if (nameEl) nameEl.innerText = AUTHOR_CONFIG.name;
+            const container = document.getElementById('author-links');
+            container.innerHTML = AUTHOR_CONFIG.links.map(link => `
+                <a href="${link.url}" target="_blank" rel="noopener"
+                   class="w-full text-left px-6 py-3 text-xs uppercase tracking-widest font-bold hover:bg-white/10 transition-colors flex items-center gap-3">
+                    <i data-lucide="${link.icon}" class="w-4 h-4 opacity-50"></i>
+                    <span class="flex-1 truncate">${link.label}</span>
+                    <i data-lucide="external-link" class="w-3 h-3 opacity-30"></i>
+                </a>
+            `).join('');
+            lucide.createIcons();
+        })();
+
+        ['donate-modal', 'bookmark-modal', 'todo-modal', 'settings-modal', 'group-name-modal', 'delete-group-modal', 'delete-note-modal'].forEach((id) => {
+            const modal = document.getElementById(id);
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) toggleModal(id);
+            });
+        });
+
+        // 点击任意处关闭右键菜单
+        document.addEventListener('click', (e) => {
+            if (!document.getElementById('group-ctx-menu').contains(e.target)) hideGroupCtxMenu();
+        });
+
+        // 分组标签栏长按（移动端）— 容器委托，只绑定一次
+        (function () {
+            const container = document.getElementById('group-tabs');
+            let touchTimer;
+            container.addEventListener('touchstart', (e) => {
+                const btn = e.target.closest('[data-gid]');
+                if (!btn) return;
+                touchTimer = setTimeout(() => showGroupCtxMenu(null, btn.dataset.gid, btn), 600);
+            }, { passive: true });
+            container.addEventListener('touchend', () => clearTimeout(touchTimer));
+            container.addEventListener('touchmove', () => clearTimeout(touchTimer));
+        })();
+
+        // 分组名称输入框回车确认
+        document.getElementById('group-name-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') confirmGroupName();
+        });
+
+        // ===== 笔记多篇系统 =====
+        function loadNotes() {
+            const saved = localStorage.getItem('notes.list');
+            if (saved) { try { return JSON.parse(saved); } catch(e) {} }
+            // 迁移旧单篇内容
+            const oldContent = localStorage.getItem('notes_v7_rich') || '';
+            return [{ id: 'note-default', title: '默认笔记', content: oldContent, updatedAt: Date.now() }];
+        }
+
+        let notesList = loadNotes();
+        let currentNoteId = notesList[0].id;
+        let noteSaveTimer = null;
+        let noteTipTimer = null;
+        let noteCtxTargetId = null;
+        let noteLongPressTimer = null;
+
+        function saveNotes() { localStorage.setItem('notes.list', JSON.stringify(notesList)); }
+
+        function getCurrentNote() { return notesList.find(n => n.id === currentNoteId) || notesList[0]; }
+
+        function renderNoteTabs() {
+            const container = document.getElementById('note-tabs');
+            container.innerHTML = notesList.map(note => {
+                const isActive = note.id === currentNoteId;
+                return `<div
+                    id="note-tab-${note.id}"
+                    class="group-tab flex-shrink-0${isActive ? ' active' : ''}"
+                    onclick="switchNote('${note.id}')"
+                    ondblclick="startRenameNote('${note.id}', event)"
+                    oncontextmenu="showNoteCtxMenu('${note.id}', event)"
+                    onpointerdown="onNoteTabPointerDown('${note.id}', event)"
+                    onpointerup="onNoteTabPointerUp()"
+                    onpointerleave="onNoteTabPointerUp()"
+                >${note.title}</div>`;
+            }).join('') +
+            `<button onclick="createNote()" class="flex-shrink-0 ml-1 p-1 rounded-lg opacity-30 hover:opacity-80 transition-opacity hover:bg-white/10" title="新建笔记">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            </button>`;
+            lucide.createIcons();
+            const activeTab = document.getElementById('note-tab-' + currentNoteId);
+            if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+        }
+
+        function switchNote(id) {
+            flushNoteContent();
+            currentNoteId = id;
+            const note = getCurrentNote();
+            document.getElementById('notepad').innerHTML = note ? note.content : '';
+            renderNoteTabs();
+            updateNoteScrollIndicator();
+        }
+
+        function flushNoteContent() {
+            const note = getCurrentNote();
+            if (!note) return;
+            note.content = document.getElementById('notepad').innerHTML;
+            note.updatedAt = Date.now();
+            saveNotes();
+        }
+
+        function onNoteInput() {
+            clearTimeout(noteSaveTimer);
+            noteSaveTimer = setTimeout(() => { flushNoteContent(); showNoteSavedTip(); }, 500);
+            updateNoteScrollIndicator();
+        }
+
+        // ===== 笔记竖向滚动（UI 仿 SHORTCUTS 分页）=====
+        function scrollNoteUp() {
+            const np = document.getElementById('notepad');
+            if (!np) return;
+            np.scrollBy({ top: -Math.max(40, np.clientHeight * 0.85), behavior: 'smooth' });
+        }
+        function scrollNoteDown() {
+            const np = document.getElementById('notepad');
+            if (!np) return;
+            np.scrollBy({ top: Math.max(40, np.clientHeight * 0.85), behavior: 'smooth' });
+        }
+        function updateNoteScrollIndicator() {
+            const np = document.getElementById('notepad');
+            const ind = document.getElementById('note-scroll-indicator');
+            if (!np || !ind) return;
+            const total = Math.max(1, Math.ceil(np.scrollHeight / Math.max(1, np.clientHeight)));
+            if (total <= 1) { ind.innerText = '1/1'; return; }
+            const maxScroll = np.scrollHeight - np.clientHeight;
+            const ratio = maxScroll > 0 ? np.scrollTop / maxScroll : 0;
+            const current = Math.min(total, Math.max(1, Math.round(1 + ratio * (total - 1))));
+            ind.innerText = `${current}/${total}`;
+        }
+
+        function showNoteSavedTip() {
+            const tip = document.getElementById('note-saved-tip');
+            tip.style.opacity = '0.45';
+            clearTimeout(noteTipTimer);
+            noteTipTimer = setTimeout(() => { tip.style.opacity = '0'; }, 3000);
+        }
+
+        function createNote() {
+            flushNoteContent();
+            const note = { id: 'note-' + Date.now(), title: '新笔记', content: '', updatedAt: Date.now() };
+            notesList.push(note);
+            saveNotes();
+            switchNote(note.id);
+        }
+
+        // --- 双击重命名 ---
+        function startRenameNote(id, e) {
+            e.stopPropagation();
+            const tab = document.getElementById('note-tab-' + id);
+            const note = notesList.find(n => n.id === id);
+            if (!tab || !note) return;
+            const oldTitle = note.title;
+            tab.contentEditable = 'true';
+            tab.focus();
+            const range = document.createRange();
+            range.selectNodeContents(tab);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            const finish = () => {
+                tab.contentEditable = 'false';
+                const newTitle = tab.innerText.trim() || oldTitle;
+                note.title = newTitle;
+                tab.innerText = newTitle;
+                saveNotes();
+            };
+            tab.onblur = finish;
+            tab.onkeydown = (ev) => {
+                if (ev.key === 'Enter') { ev.preventDefault(); tab.blur(); }
+                if (ev.key === 'Escape') { tab.innerText = oldTitle; tab.onblur = null; tab.blur(); }
+            };
+        }
+
+        function startRenameNoteFromCtx() {
+            hideNoteCtxMenu();
+            setTimeout(() => startRenameNote(noteCtxTargetId, { stopPropagation: () => {} }), 50);
+        }
+
+        // --- 右键 / 长按菜单 ---
+        function showNoteCtxMenu(id, e) {
+            e.preventDefault();
+            e.stopPropagation();
+            noteCtxTargetId = id;
+            const menu = document.getElementById('note-ctx-menu');
+            const delBtn = document.getElementById('note-ctx-delete-btn');
+            const canDelete = notesList.length > 1;
+            delBtn.style.opacity = canDelete ? '1' : '0.3';
+            delBtn.style.pointerEvents = canDelete ? 'auto' : 'none';
+            delBtn.title = canDelete ? '' : '至少保留一篇笔记';
+            menu.style.left = e.clientX + 'px';
+            menu.style.top  = e.clientY + 'px';
+            menu.classList.remove('hidden');
+        }
+
+        function hideNoteCtxMenu() { document.getElementById('note-ctx-menu').classList.add('hidden'); }
+
+        function onNoteTabPointerDown(id, e) {
+            if (e.button !== 0) return;
+            noteLongPressTimer = setTimeout(() => showNoteCtxMenu(id, e), 500);
+        }
+        function onNoteTabPointerUp() { clearTimeout(noteLongPressTimer); }
+
+        function confirmDeleteNote() {
+            hideNoteCtxMenu();
+            if (notesList.length <= 1) return;
+            const note = notesList.find(n => n.id === noteCtxTargetId);
+            if (!note) return;
+            document.getElementById('del-note-title').innerText = `"${note.title}"`;
+            toggleModal('delete-note-modal');
+        }
+
+        function executeDeleteNote() {
+            toggleModal('delete-note-modal');
+            if (notesList.length <= 1) return;
+            const idx = notesList.findIndex(n => n.id === noteCtxTargetId);
+            if (idx === -1) return;
+            notesList.splice(idx, 1);
+            if (currentNoteId === noteCtxTargetId) currentNoteId = notesList[Math.max(0, idx - 1)].id;
+            saveNotes();
+            switchNote(currentNoteId);
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!document.getElementById('note-ctx-menu').contains(e.target)) hideNoteCtxMenu();
+        });
+
+        // 初始化笔记
+        const np = document.getElementById('notepad');
+        np.innerHTML = getCurrentNote()?.content || '';
+        np.oninput = onNoteInput;
+        np.addEventListener('scroll', updateNoteScrollIndicator, { passive: true });
+        renderNoteTabs();
+        updateNoteScrollIndicator();
+
+        function formatDoc(cmd, value = null) {
+            document.execCommand(cmd, false, value);
+            np.focus();
+        }
+
+        // ===== 通用：点击外部关闭 =====
+        function bindOutsideClick(panelId, btnId) {
+            document.addEventListener('click', e => {
+                const panel = document.getElementById(panelId);
+                const btn = document.getElementById(btnId);
+                if (!panel || panel.classList.contains('hidden')) return;
+                if (!panel.contains(e.target) && (!btn || !btn.contains(e.target))) {
+                    panel.classList.add('hidden');
+                }
+            });
+        }
+
+        // ===== 番茄钟 =====
+        const POMODORO_KEY = 'pomodoro_state';
+        const SHORT_BREAK = 5, LONG_BREAK = 15, ROUNDS = 4;
+        let pomodoroTick = null;
+        const pomoEl = {
+            panel: null, setup: null, run: null, phase: null, time: null, pauseBtn: null
+        };
+        function initPomoEls() {
+            pomoEl.panel = document.getElementById('pomodoro-panel');
+            pomoEl.setup = document.getElementById('pomodoro-setup');
+            pomoEl.run = document.getElementById('pomodoro-run');
+            pomoEl.phase = document.getElementById('pomodoro-phase');
+            pomoEl.time = document.getElementById('pomodoro-time');
+            pomoEl.pauseBtn = document.getElementById('pomodoro-pause');
+        }
+
+        document.querySelectorAll('.pomo-dur-btn').forEach(b => {
+            b.addEventListener('click', () => {
+                document.querySelectorAll('.pomo-dur-btn').forEach(x => x.classList.remove('active'));
+                b.classList.add('active');
+                const custom = document.getElementById('pomodoro-custom');
+                if (custom) custom.value = '';
+            });
+        });
+        document.getElementById('pomodoro-custom')?.addEventListener('input', () => {
+            document.querySelectorAll('.pomo-dur-btn').forEach(x => x.classList.remove('active'));
+        });
+
+        function getPomoFocusMin() {
+            const custom = parseInt(document.getElementById('pomodoro-custom').value, 10);
+            if (custom && custom > 0) return Math.min(custom, 180);
+            const active = document.querySelector('.pomo-dur-btn.active');
+            return active ? parseInt(active.dataset.pomoDur, 10) : 25;
+        }
+
+        function savePomoState(s) { localStorage.setItem(POMODORO_KEY, JSON.stringify(s)); }
+        function loadPomoState() {
+            try { return JSON.parse(localStorage.getItem(POMODORO_KEY)); } catch { return null; }
+        }
+        function clearPomoState() { localStorage.removeItem(POMODORO_KEY); }
+
+        function phaseLabel(s) {
+            if (s.phase === 'focus') return `专注 · 第 ${s.round} 轮`;
+            if (s.phase === 'short') return '短休息';
+            return '长休息';
+        }
+        function phaseDurationMin(s) {
+            if (s.phase === 'focus') return s.focusMin;
+            if (s.phase === 'short') return SHORT_BREAK;
+            return LONG_BREAK;
+        }
+
+        function notifyPomo(title, body) {
+            if (!('Notification' in window)) return;
+            if (Notification.permission === 'granted') new Notification(title, { body });
+        }
+
+        function renderPomoRunning(s) {
+            if (!pomoEl.panel) initPomoEls();
+            pomoEl.setup.classList.add('hidden');
+            pomoEl.run.classList.remove('hidden');
+            pomoEl.phase.textContent = phaseLabel(s) + (s.paused ? ' · 已暂停' : '');
+            const remainMs = s.paused ? s.remainMs : (s.endAt - Date.now());
+            const remain = Math.max(0, Math.round(remainMs / 1000));
+            const m = String(Math.floor(remain / 60)).padStart(2, '0');
+            const sec = String(remain % 60).padStart(2, '0');
+            pomoEl.time.textContent = `${m}:${sec}`;
+            if (pomoEl.pauseBtn) pomoEl.pauseBtn.textContent = s.paused ? '继续' : '暂停';
+        }
+        function renderPomoIdle() {
+            if (!pomoEl.panel) initPomoEls();
+            pomoEl.setup.classList.remove('hidden');
+            pomoEl.run.classList.add('hidden');
+        }
+
+        function togglePomodoroPause() {
+            const s = loadPomoState();
+            if (!s) return;
+            if (s.paused) {
+                s.endAt = Date.now() + s.remainMs;
+                delete s.paused;
+                delete s.remainMs;
+                savePomoState(s);
+                runPomoLoop();
+            } else {
+                s.paused = true;
+                s.remainMs = Math.max(0, s.endAt - Date.now());
+                savePomoState(s);
+                if (pomodoroTick) { clearInterval(pomodoroTick); pomodoroTick = null; }
+                renderPomoRunning(s);
+                document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: false } }));
+                return;
+            }
+            document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: true } }));
+        }
+
+        function startPomodoro() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+            const focusMin = getPomoFocusMin();
+            const state = {
+                focusMin,
+                phase: 'focus',
+                round: 1,
+                endAt: Date.now() + focusMin * 60 * 1000
+            };
+            savePomoState(state);
+            runPomoLoop();
+            document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: true } }));
+        }
+
+        function stopPomodoro() {
+            if (pomodoroTick) { clearInterval(pomodoroTick); pomodoroTick = null; }
+            clearPomoState();
+            renderPomoIdle();
+            document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: false } }));
+        }
+
+        function skipPomodoro() {
+            const s = loadPomoState();
+            if (!s) return;
+            s.endAt = Date.now();
+            savePomoState(s);
+        }
+
+        function advancePomoPhase(s) {
+            const finished = s.phase;
+            const finishedRound = s.round;
+            if (finished === 'focus') {
+                document.dispatchEvent(new CustomEvent('pomodoro:focus-complete', { detail: { round: finishedRound } }));
+                notifyPomo('🍅 专注结束', '休息一下！');
+                if (finishedRound >= ROUNDS) {
+                    document.dispatchEvent(new CustomEvent('pomodoro:cycle-complete', { detail: { rounds: ROUNDS } }));
+                    s.phase = 'long';
+                } else {
+                    s.phase = 'short';
+                }
+            } else {
+                notifyPomo('🍅 休息结束', '继续加油！');
+                if (finished === 'long') {
+                    clearPomoState();
+                    renderPomoIdle();
+                    document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: false } }));
+                    return null;
+                }
+                s.phase = 'focus';
+                s.round = finishedRound + 1;
+            }
+            s.endAt = Date.now() + phaseDurationMin(s) * 60 * 1000;
+            savePomoState(s);
+            return s;
+        }
+
+        function runPomoLoop() {
+            if (pomodoroTick) clearInterval(pomodoroTick);
+            const step = () => {
+                let s = loadPomoState();
+                if (!s) { clearInterval(pomodoroTick); pomodoroTick = null; renderPomoIdle(); return; }
+                if (s.paused) { renderPomoRunning(s); return; }
+                if (Date.now() >= s.endAt) {
+                    s = advancePomoPhase(s);
+                    if (!s) { clearInterval(pomodoroTick); pomodoroTick = null; return; }
+                }
+                renderPomoRunning(s);
+            };
+            step();
+            pomodoroTick = setInterval(step, 500);
+        }
+
+        // 刷新恢复
+        (function restorePomo() {
+            const s = loadPomoState();
+            if (!s) return;
+            if (s.paused) { renderPomoRunning(s); return; }
+            if (s.endAt) {
+                runPomoLoop();
+                document.dispatchEvent(new CustomEvent('pet:cheer', { detail: { on: true } }));
+            }
+        })();
+
+        // ===== 番茄钟 ↔ 宠物 联动（通过 CustomEvent 解耦） =====
+        document.addEventListener('pomodoro:focus-complete', () => {
+            if (typeof changePetMood === 'function') { changePetMood(+2); touchPetInteract(); }
+            triggerCelebrate(2400);
+        });
+        document.addEventListener('pomodoro:cycle-complete', () => {
+            triggerCelebrate(3000);
+        });
+
+        // ===== 宠物被动感知（通过 CustomEvent 解耦） =====
+        // 事件结束后延迟 3s 才回到默认状态
+        const PET_EVENT_TAIL_MS = 3000;
+        let _petFocusedOffTimer = null;
+        let _petCheeringOffTimer = null;
+        // 打字中 → focused；停止打字 3 秒后回到默认
+        document.addEventListener('pet:input-active', e => {
+            if (petLoadSleep) return;
+            const on = !!(e.detail && e.detail.on);
+            clearTimeout(_petFocusedOffTimer);
+            if (on) {
+                setPetPassive('focused', true);
+            } else {
+                _petFocusedOffTimer = setTimeout(() => setPetPassive('focused', false), PET_EVENT_TAIL_MS);
+            }
+        });
+        // 完成 Todo → 庆祝 1.5 秒（由 dispatch 方指定 duration，默认 1500ms）
+        document.addEventListener('pet:celebrate', e => {
+            if (petLoadSleep) return;
+            triggerCelebrate((e.detail && e.detail.duration) || 1500);
+        });
+        // 番茄钟进行中 → cheering；停止 3 秒后回到默认
+        document.addEventListener('pet:cheer', e => {
+            if (petLoadSleep) return;
+            const on = !!(e.detail && e.detail.on);
+            clearTimeout(_petCheeringOffTimer);
+            if (on) {
+                setPetPassive('cheering', true);
+            } else {
+                _petCheeringOffTimer = setTimeout(() => setPetPassive('cheering', false), PET_EVENT_TAIL_MS);
+            }
+        });
+        // 长时间空闲 → yawning 1.5s → sleeping；任意鼠标移动惊醒
+        let _petYawnTimer = null;
+        document.addEventListener('pet:long-idle', e => {
+            if (petLoadSleep) return;
+            const on = !!(e.detail && e.detail.on);
+            if (typeof isPetFree === 'function' && isPetFree()) {
+                // 自由模式：交给 FSM，内部也会播 yawning
+                if (on) fsmEnter('sleeping');
+                else fsmWakeFromSleep();
+                return;
+            }
+            // 卡片内：yawning 1.5s 过渡后进入 sleeping
+            clearTimeout(_petYawnTimer);
+            if (on) {
+                setPetPassive('yawning', true);
+                _petYawnTimer = setTimeout(() => {
+                    setPetPassive('yawning', false);
+                    setPetPassive('sleeping', true);
+                }, 1500);
+            } else {
+                setPetPassive('yawning', false);
+                setPetPassive('sleeping', false);
+            }
+        });
+
+        // 输入框活跃探测：聚焦 Note 编辑器或 Todo 输入框时触发 watch
+        (function inputActiveWatcher() {
+            function isWatched(t) {
+                if (!t) return false;
+                if (t.id === 'todo-input') return true;
+                if (t.id === 'notepad') return true;
+                return false;
+            }
+            document.addEventListener('focusin', e => {
+                if (isWatched(e.target))
+                    document.dispatchEvent(new CustomEvent('pet:input-active', { detail: { on: true } }));
+            });
+            document.addEventListener('focusout', e => {
+                if (isWatched(e.target))
+                    document.dispatchEvent(new CustomEvent('pet:input-active', { detail: { on: false } }));
+            });
+        })();
+
+        // 加载睡眠锁 —— 必须在 petIdleWatcher IIFE 之前声明（IIFE 末尾会立即调用 reset()，
+        // 如果 reset 里引用了 TDZ 中的 let 变量会抛 ReferenceError 导致整个脚本中断）
+        var petLoadSleep = false;
+        var _wakeInProgress = false;
+
+        // 空闲探测器：>10 分钟无任何活动则进入睡眠；同时节流刷新 pet.lastActiveTime
+        (function petIdleWatcher() {
+            const IDLE_MS = 10 * 60 * 1000;
+            let timer = null;
+            let sleeping = false;
+            let _lastActiveWrite = 0;
+            function reset() {
+                // 节流 30s 写入 lastActiveTime（供下次加载判断是否进入睡眠）
+                const _now = Date.now();
+                if (_now - _lastActiveWrite > 30000) {
+                    touchLastActive();
+                    _lastActiveWrite = _now;
+                }
+                // 加载睡眠激活时：活动只负责刷时间戳，不唤醒（只响应宠物点击）
+                if (petLoadSleep) { clearTimeout(timer); return; }
+                if (sleeping) {
+                    sleeping = false;
+                    document.dispatchEvent(new CustomEvent('pet:long-idle', { detail: { on: false } }));
+                }
+                clearTimeout(timer);
+                timer = setTimeout(() => {
+                    sleeping = true;
+                    document.dispatchEvent(new CustomEvent('pet:long-idle', { detail: { on: true } }));
+                }, IDLE_MS);
+            }
+            ['mousemove', 'keydown', 'scroll', 'click', 'touchstart'].forEach(ev =>
+                window.addEventListener(ev, reset, { passive: true }));
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) reset(); });
+            reset();
+        })();
+
+        function toggleNoteToolbar(e) {
+            if (e) e.stopPropagation();
+            document.getElementById('note-toolbar-dropdown').classList.toggle('hidden');
+        }
+        bindOutsideClick('note-toolbar-dropdown', 'note-toolbar-toggle');
+
+        // ===== 面板显示控制 =====
+        const PANEL_KEYS = ['shortcuts', 'note', 'todo', 'pet', 'hitokoto'];
+        const MAIN_PANEL_KEYS = ['shortcuts', 'note', 'todo', 'pet'];
+        const PANEL_ID_MAP = {
+            shortcuts: 'panel-shortcuts',
+            note: 'panel-note-col',
+            todo: 'panel-todo-col',
+            pet: 'panel-pet',
+            hitokoto: 'hitokoto-container'
+        };
+
+        function loadPanelVisibility() {
+            const defaults = { shortcuts: true, note: true, todo: true, pet: true, hitokoto: true };
+            const saved = localStorage.getItem('panel_visibility_v1');
+            if (saved) { try { return { ...defaults, ...JSON.parse(saved) }; } catch(e) {} }
+            return defaults;
+        }
+
+        let panelVisibility = loadPanelVisibility();
+
+        function savePanelVisibility() {
+            localStorage.setItem('panel_visibility_v1', JSON.stringify(panelVisibility));
+        }
+
+        function updatePanelToggleUI() {
+            const mainVisibleCount = MAIN_PANEL_KEYS.filter(k => panelVisibility[k]).length;
+            PANEL_KEYS.forEach(key => {
+                const isOn = panelVisibility[key];
+                const isLast = isOn && mainVisibleCount === 1 && MAIN_PANEL_KEYS.includes(key);
+
+                // 设置面板里的开关按钮
+                const btn = document.getElementById('toggle-' + key);
+                if (btn) {
+                    if (isOn) {
+                        btn.style.background = 'rgba(255,255,255,0.18)';
+                        btn.style.opacity = isLast ? '0.4' : '1';
+                        btn.style.borderColor = isLast ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.5)';
+                        btn.style.cursor = isLast ? 'not-allowed' : 'pointer';
+                        btn.title = isLast ? '至少保留一个面板' : '';
+                    } else {
+                        btn.style.background = 'transparent';
+                        btn.style.opacity = '0.35';
+                        btn.style.borderColor = 'rgba(255,255,255,0.15)';
+                        btn.style.cursor = 'pointer';
+                        btn.title = '';
+                    }
+                }
+
+                // 面板内关闭按钮：最后一个时隐藏，防止全关
+                const closeBtn = document.getElementById('close-' + key);
+                if (closeBtn) closeBtn.style.display = isLast ? 'none' : '';
+
+                // 顶部下拉里的勾选图标
+                const ddCheck = document.getElementById('dd-check-' + key);
+                if (ddCheck) ddCheck.style.opacity = isOn ? '1' : '0';
+            });
+        }
+
+        function applyPanelVisibility() {
+            PANEL_KEYS.forEach(key => {
+                const el = document.getElementById(PANEL_ID_MAP[key]);
+                if (el) {
+                    el.classList.toggle('hidden', !panelVisibility[key]);
+                    if (panelVisibility[key]) el.style.removeProperty('display');
+                }
+            });
+            updatePanelToggleUI();
+            setTimeout(calcAndRenderBookmarks, 50);
+        }
+
+        function togglePanel(key) {
+            if (MAIN_PANEL_KEYS.includes(key)) {
+                const visibleCount = MAIN_PANEL_KEYS.filter(k => panelVisibility[k]).length;
+                if (panelVisibility[key] && visibleCount <= 1) return; // 至少保留一个主面板
+            }
+            panelVisibility[key] = !panelVisibility[key];
+            savePanelVisibility();
+            applyPanelVisibility();
+        }
+
+        // ===== 宠物 PNG 渲染 =====
+        // 状态 → 图片文件名（assets/pets/<type>/<filename>.png）
+        const PET_STATE_IMAGE = {
+            idle: 'idle',
+            happy: 'happy',
+            sad: 'sad',
+            celebrate: 'celebrate',
+            focused: 'focused',
+            cheering: 'cheering',
+            sleeping: 'sleeping',
+            eating: 'eating',
+            dragged: 'dragged',
+            yawning: 'yawning'
+        };
+        const PET_IMAGE_STATES = Object.keys(PET_STATE_IMAGE);
+        function petImagePath(type, state) {
+            const s = PET_STATE_IMAGE[state] ? state : 'idle';
+            return `assets/pets/${type}/${PET_STATE_IMAGE[s]}.png`;
+        }
+        function renderPet(type, state) {
+            const s = PET_STATE_IMAGE[state] ? state : 'idle';
+            return `<img class="pet-img" src="${petImagePath(type, s)}" alt="${type}" draggable="false">`;
+        }
+        function preloadPetImages(type) {
+            PET_IMAGE_STATES.forEach(s => { const img = new Image(); img.src = petImagePath(type, s); });
+        }
+        const PET_ALL_STATES_ARR = PET_IMAGE_STATES;
+        function setPetState(state) {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            const target = PET_STATE_IMAGE[state] ? state : 'idle';
+            if (el.dataset.state === target) return;
+            const img = el.querySelector('.pet-img');
+            const type = el.dataset.type || localStorage.getItem('pet.type') || 'cat';
+            // 平滑过渡：先淡掉当前图片，切换 src 后淡回来
+            if (img) img.style.opacity = '0';
+            clearTimeout(el._stateSwap);
+            el._stateSwap = setTimeout(() => {
+                PET_ALL_STATES_ARR.forEach(s => el.classList.remove('state-' + s));
+                el.classList.add('state-' + target);
+                el.dataset.state = target;
+                if (img) {
+                    img.src = petImagePath(type, target);
+                    img.style.opacity = '1';
+                }
+                const zz = document.getElementById('pet-zz');
+                if (zz) zz.classList.toggle('show', target === 'sleeping');
+            }, 80);
+        }
+        function mountPetChildren(type) {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            el.dataset.type = type;
+            const mood = document.getElementById('pet-mood');
+            const fx = document.getElementById('pet-mood-fx');
+            const zz = document.getElementById('pet-zz');
+            const food = document.getElementById('pet-food');
+            el.innerHTML = renderPet(type, el.dataset.state || 'idle');
+            if (mood) el.appendChild(mood);
+            if (fx) el.appendChild(fx);
+            if (zz) el.appendChild(zz);
+            if (food) el.appendChild(food);
+        }
+        function setPetType(type) { mountPetChildren(type); preloadPetImages(type); }
+        function applyPetTypeToUI(type) { mountPetChildren(type); preloadPetImages(type); }
+
+        // ===== 心情系统 =====
+        const MOOD_HEART_FULL = '<svg class="mood-heart" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7-4.5-9.5-9C.8 8.5 2.8 4 7 4c2 0 3.5 1 5 3 1.5-2 3-3 5-3 4.2 0 6.2 4.5 4.5 8-2.5 4.5-9.5 9-9.5 9z"/></svg>';
+        const MOOD_HEART_EMPTY = '<svg class="mood-heart empty" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7-4.5-9.5-9C.8 8.5 2.8 4 7 4c2 0 3.5 1 5 3 1.5-2 3-3 5-3 4.2 0 6.2 4.5 4.5 8-2.5 4.5-9.5 9-9.5 9z"/></svg>';
+
+        function loadPetMood() {
+            const m = parseInt(localStorage.getItem('pet.mood'), 10);
+            return Number.isFinite(m) ? Math.max(1, Math.min(5, m)) : 3;
+        }
+        function savePetMood(m) {
+            localStorage.setItem('pet.mood', String(Math.max(1, Math.min(5, m))));
+        }
+        function touchPetInteract() {
+            localStorage.setItem('pet.lastInteract', String(Date.now()));
+        }
+        function loadPetLastInteract() {
+            const t = parseInt(localStorage.getItem('pet.lastInteract'), 10);
+            return Number.isFinite(t) ? t : Date.now();
+        }
+        function loadPetLastLoad() {
+            const t = parseInt(localStorage.getItem('pet.lastLoad'), 10);
+            return Number.isFinite(t) ? t : null;
+        }
+
+        function renderPetMood() {
+            const box = document.getElementById('pet-mood');
+            if (!box) return;
+            const m = loadPetMood();
+            let html = '';
+            for (let i = 1; i <= 5; i++) html += i <= m ? MOOD_HEART_FULL : MOOD_HEART_EMPTY;
+            box.innerHTML = html;
+        }
+        function changePetMood(delta) {
+            const prev = loadPetMood();
+            const next = Math.max(1, Math.min(5, prev + delta));
+            savePetMood(next);
+            renderPetMood();
+            const prevSadBand = prev <= 2;
+            const nextSadBand = next <= 2;
+            const prevHighBand = prev >= 4;
+            const nextHighBand = next >= 4;
+            const bandChanged = (prevSadBand !== nextSadBand) || (prevHighBand !== nextHighBand);
+            applyMoodToBaseState();
+            if (bandChanged) {
+                flashPetMoodFx();
+                // 自由模式下心情区间变化 → 重启 FSM（不打断当前 walking 中的位移）
+                if (typeof isPetFree === 'function' && isPetFree() && petFsm.state !== 'walking') {
+                    fsmEnter('standing');
+                }
+            }
+        }
+
+        // ===== 事件驱动状态：投喂 / 拒绝 =====
+        function triggerOneShotState(state, ms) {
+            petActiveStates.add(state);
+            recomputePetState();
+            clearTimeout(window['_petOneShot_' + state]);
+            window['_petOneShot_' + state] = setTimeout(() => {
+                petActiveStates.delete(state);
+                recomputePetState();
+            }, ms);
+        }
+        const FOOD_SVG = '<svg viewBox="0 0 24 24" fill="#f59e0b"><circle cx="12" cy="14" r="6"/><path d="M10 8l2-4 2 4z" fill="#84cc16"/></svg>';
+        function showFoodPop() {
+            const f = document.getElementById('pet-food');
+            if (!f) return;
+            f.innerHTML = FOOD_SVG;
+            f.classList.remove('show');
+            void f.offsetWidth; // 强制重置动画
+            f.classList.add('show');
+        }
+        function triggerFeedAnimation() {
+            showFoodPop();
+            triggerOneShotState('eating', 2000);
+        }
+        function triggerRefuseAnimation() {
+            // 拒绝投喂 → 短暂显示 sad 作为反馈
+            triggerOneShotState('sad', 1500);
+        }
+
+        // ===== 拖拽 =====
+        function loadPetPos() {
+            try {
+                const raw = localStorage.getItem('pet.pos');
+                if (!raw) return null;
+                const p = JSON.parse(raw);
+                if (typeof p.x === 'number' && typeof p.y === 'number') return p;
+            } catch (e) {}
+            return null;
+        }
+        function savePetPos(x, y) {
+            localStorage.setItem('pet.pos', JSON.stringify({ x, y }));
+        }
+        function clearPetPos() {
+            localStorage.removeItem('pet.pos');
+        }
+        function pinPetTo(x, y) {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            el.classList.add('pinned');
+            el.style.left = x + 'px';
+            el.style.top = y + 'px';
+            el.dataset.pinned = 'true';
+        }
+        function unpinPet() {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            el.classList.remove('pinned');
+            el.style.left = '0px';
+            el.style.top = '0px';
+            delete el.dataset.pinned;
+            clearPetPos();
+        }
+        function attachPetDrag() {
+            const el = document.getElementById('pet');
+            if (!el || el._dragAttached) return;
+            el._dragAttached = true;
+            let startX, startY, originLeft, originTop, dragging = false, moved = false, pid = null, lastX = 0, dragScale = 1;
+            el.addEventListener('pointerdown', e => {
+                if (e.button !== 0) return;
+                pid = e.pointerId;
+                startX = e.clientX; startY = e.clientY;
+                el.style.transition = 'none';
+                // 以当前父元素（即 absolute 定位的包含块）为基准，把视口位移换算到本地坐标系
+                const parent = el.parentElement || document.body;
+                const pRect = parent.getBoundingClientRect();
+                dragScale = parent.offsetWidth ? (pRect.width / parent.offsetWidth) : 1;
+                if (!isFinite(dragScale) || dragScale <= 0) dragScale = 1;
+                const rect = el.getBoundingClientRect();
+                originLeft = (rect.left - pRect.left) / dragScale;
+                originTop  = (rect.top  - pRect.top ) / dragScale;
+                lastX = originLeft;
+                dragging = true; moved = false;
+                el.setPointerCapture(pid);
+            });
+            el.addEventListener('pointermove', e => {
+                if (!dragging) return;
+                const dx = (e.clientX - startX) / dragScale;
+                const dy = (e.clientY - startY) / dragScale;
+                if (!moved && Math.hypot(dx * dragScale, dy * dragScale) > 6) {
+                    moved = true;
+                    el.classList.add('dragging', 'pinned');
+                    el.dataset.pinned = 'true';
+                    setPetPassive('dragged', true);
+                }
+                if (moved) {
+                    const newLeft = originLeft + dx;
+                    if (Math.abs(newLeft - lastX) > 2) {
+                        el.classList.toggle('facing-left', newLeft < lastX);
+                        lastX = newLeft;
+                    }
+                    el.style.left = newLeft + 'px';
+                    el.style.top = (originTop + dy) + 'px';
+                }
+            });
+            const finish = e => {
+                if (!dragging) return;
+                dragging = false;
+                if (pid != null) { try { el.releasePointerCapture(pid); } catch (_) {} pid = null; }
+                el.style.transition = '';
+                if (moved) {
+                    el.classList.remove('dragging');
+                    const x = parseFloat(el.style.left) || 0;
+                    const y = parseFloat(el.style.top) || 0;
+                    savePetPos(x, y);
+                    el._suppressClick = true;
+                    setTimeout(() => { el._suppressClick = false; }, 100);
+                    // 拖拽结束 3 秒后回到默认状态
+                    clearTimeout(el._draggedOffTimer);
+                    el._draggedOffTimer = setTimeout(() => setPetPassive('dragged', false), 3000);
+                }
+            };
+            el.addEventListener('pointerup', finish);
+            el.addEventListener('pointercancel', finish);
+        }
+
+        // ===== 自由活动模式（脱离卡片，全屏游走） =====
+        let petFreeTimer = null;
+        function isPetFree() { return localStorage.getItem('pet.free') === '1'; }
+        function setPetFreeFlag(on) { localStorage.setItem('pet.free', on ? '1' : '0'); }
+
+        function getPetObstacleRects() {
+            // 所有玻璃面板（搜索框 + 各分栏）都是宠物的禁区（视口坐标）
+            const SELECTORS = ['.search-container', '#panel-shortcuts', '#panel-note-col', '#panel-todo-col', '#panel-pet'];
+            const rects = [];
+            SELECTORS.forEach(sel => {
+                document.querySelectorAll(sel).forEach(node => {
+                    if (!node.offsetParent && node !== document.documentElement) return;
+                    const r = node.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) rects.push(r);
+                });
+            });
+            return rects;
+        }
+        // 把视口坐标换算到 #main-container 内部坐标（除去等比缩放）
+        function getPetObstacleRectsLocal(root) {
+            if (!root) return getPetObstacleRects().map(r => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }));
+            const rootRect = root.getBoundingClientRect();
+            const scaleX = rootRect.width / root.offsetWidth || 1;
+            const scaleY = rootRect.height / root.offsetHeight || 1;
+            return getPetObstacleRects().map(r => ({
+                left: (r.left - rootRect.left) / scaleX,
+                top: (r.top - rootRect.top) / scaleY,
+                right: (r.right - rootRect.left) / scaleX,
+                bottom: (r.bottom - rootRect.top) / scaleY
+            }));
+        }
+        function rectOverlapsAny(x, y, size, rects, pad) {
+            const p = pad || 8;
+            for (const r of rects) {
+                if (!(x + size < r.left - p || x > r.right + p || y + size < r.top - p || y > r.bottom + p)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        function pickFreeTarget() {
+            // 在 #main-container 的本地坐标系（设计尺寸 1920×1080）里挑目标点
+            const root = document.getElementById('main-container');
+            const w = root ? root.offsetWidth : window.innerWidth;
+            const h = root ? root.offsetHeight : window.innerHeight;
+            const rects = getPetObstacleRectsLocal(root);
+            const PET = 120, MARGIN = 16;
+            const minX = MARGIN, minY = MARGIN;
+            const maxX = Math.max(minX, w - PET - MARGIN);
+            const maxY = Math.max(minY, h - PET - MARGIN);
+            const m = loadPetMood();
+            // 不开心：窝在某个角落，小幅抖动；角落仍要避开面板
+            const candidates = [];
+            if (m <= 2) {
+                const corners = [[minX, maxY], [maxX, maxY], [minX, minY], [maxX, minY]];
+                for (const c of corners) {
+                    const jx = (Math.random() - 0.5) * 30;
+                    const jy = (Math.random() - 0.5) * 30;
+                    const x = Math.max(minX, Math.min(maxX, c[0] + jx));
+                    const y = Math.max(minY, Math.min(maxY, c[1] + jy));
+                    if (!rectOverlapsAny(x, y, PET, rects)) candidates.push({ x, y });
+                }
+                if (candidates.length) return candidates[Math.floor(Math.random() * candidates.length)];
+                // 角落都被遮挡：退到屏幕边缘上下
+                return { x: maxX, y: minY };
+            }
+            // 普通/开心：全屏随机，避开所有面板
+            for (let i = 0; i < 24; i++) {
+                const x = minX + Math.random() * (maxX - minX);
+                const y = minY + Math.random() * (maxY - minY);
+                if (!rectOverlapsAny(x, y, PET, rects)) return { x, y };
+            }
+            // 兜底：右下角
+            return { x: maxX, y: maxY };
+        }
+        // ===== 自由活动状态机：standing / walking / sitting / sleeping =====
+        const PET_WALK_SPEED = 60; // px/sec 上限
+        const petFsm = { state: null, stateTimer: null, walkTimer: null, yawnTimer: null };
+        function clearFsmTimers() {
+            if (petFsm.stateTimer) { clearTimeout(petFsm.stateTimer); petFsm.stateTimer = null; }
+            if (petFsm.walkTimer) { clearTimeout(petFsm.walkTimer); petFsm.walkTimer = null; }
+            if (petFsm.yawnTimer) { clearTimeout(petFsm.yawnTimer); petFsm.yawnTimer = null; }
+        }
+        function fsmEnter(state) {
+            if (!isPetFree()) return;
+            clearFsmTimers();
+            petFsm.state = state;
+            if (state === 'standing') runFsmStanding();
+            else if (state === 'walking') runFsmWalking();
+            else if (state === 'sitting') runFsmSitting();
+            else if (state === 'sleeping') runFsmSleeping();
+        }
+        function runFsmStanding() {
+            applyMoodToBaseState();
+            const dur = 8000 + Math.random() * 7000; // 8-15s
+            petFsm.stateTimer = setTimeout(() => {
+                const m = loadPetMood();
+                const r = Math.random();
+                if (m <= 2) {
+                    // 心情低：100% 继续 standing，不移动
+                    fsmEnter('standing');
+                } else if (m === 3) {
+                    // mood 3：30% walking / 70% standing
+                    if (r < 0.3) fsmEnter('walking');
+                    else fsmEnter('standing');
+                } else {
+                    // mood 4-5：70% walking / 20% sitting / 10% standing
+                    if (r < 0.7) fsmEnter('walking');
+                    else if (r < 0.9) fsmEnter('sitting');
+                    else fsmEnter('standing');
+                }
+            }, dur);
+        }
+        function runFsmWalking() {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            const target = pickFreeTarget();
+            const cur = { x: parseFloat(el.style.left) || 0, y: parseFloat(el.style.top) || 0 };
+            const dx = target.x - cur.x, dy = target.y - cur.y;
+            const dist = Math.hypot(dx, dy);
+            // 速度上限 60px/s，最小步长 0.8s
+            const ms = Math.max(800, (dist / PET_WALK_SPEED) * 1000);
+            el.style.transition = `left ${ms}ms cubic-bezier(0.42,0,0.58,1), top ${ms}ms cubic-bezier(0.42,0,0.58,1), opacity 0.35s ease`;
+            el.classList.toggle('facing-left', target.x < cur.x);
+            void el.offsetWidth; // 强制 reflow，确保新 transition 生效
+            el.style.left = target.x + 'px';
+            el.style.top = target.y + 'px';
+            applyMoodToBaseState();
+            petFsm.walkTimer = setTimeout(() => fsmEnter('standing'), ms + 50);
+        }
+        function runFsmSitting() {
+            // 用 sleeping 视觉作为坐下姿势（无专属 sitting 素材）；不显示 zz
+            petActiveStates.add('sleeping');
+            recomputePetState();
+            const zz = document.getElementById('pet-zz');
+            if (zz) zz.classList.remove('show'); // 坐下不显示 zz
+            const dur = 5000 + Math.random() * 5000; // 5-10s
+            petFsm.stateTimer = setTimeout(() => {
+                petActiveStates.delete('sleeping');
+                fsmEnter('standing');
+            }, dur);
+        }
+        function runFsmSleeping() {
+            // 先 yawning 1.5s → 再 sleeping + zz；由任意鼠标移动唤醒
+            petActiveStates.add('yawning');
+            recomputePetState();
+            petFsm.yawnTimer = setTimeout(() => {
+                petActiveStates.delete('yawning');
+                petActiveStates.add('sleeping');
+                recomputePetState();
+                const zz = document.getElementById('pet-zz');
+                if (zz) zz.classList.add('show');
+            }, 1500);
+        }
+        function fsmWakeFromSleep() {
+            if (petFsm.state !== 'sleeping') return;
+            petActiveStates.delete('yawning');
+            petActiveStates.delete('sleeping');
+            const zz = document.getElementById('pet-zz');
+            if (zz) zz.classList.remove('show');
+            fsmEnter('standing');
+        }
+        function startFreeRoam() {
+            stopFreeRoam();
+            fsmEnter('standing');
+        }
+        function stopFreeRoam() {
+            clearFsmTimers();
+            petFsm.state = null;
+            petActiveStates.delete('yawning');
+            petActiveStates.delete('sleeping');
+            const el = document.getElementById('pet');
+            if (el) el.style.transition = ''; // 还原默认 CSS transition
+        }
+        function enterFreeMode() {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            setPetFreeFlag(true);
+            // 卡片的 backdrop-filter 会成为 fixed 子元素的包含块；
+            // 挂到 #main-container（已应用等比 scale 的设计稿容器），
+            // 这样宠物会和整个 UI 一起被缩放，视觉与卡片内一致。
+            const root = document.getElementById('main-container');
+            if (!root) return;
+            // 先记录宠物当前的视觉位置，换算到设计稿坐标系
+            const rootRect = root.getBoundingClientRect();
+            const petRect = el.getBoundingClientRect();
+            const scale = (rootRect.width / root.offsetWidth) || 1;
+            const startX = (petRect.left - rootRect.left) / scale;
+            const startY = (petRect.top - rootRect.top) / scale;
+            if (el.parentElement !== root) root.appendChild(el);
+            el.classList.add('pinned');
+            el.dataset.pinned = 'true';
+            el.dataset.free = 'true';
+            // 先把宠物钉在原视觉位置（关闭过渡），下一帧再过渡到目标角落
+            el.style.transition = 'none';
+            el.style.left = startX + 'px';
+            el.style.top = startY + 'px';
+            void el.offsetHeight; // 强制回流，确保起点生效
+            el.style.transition = '';
+            const w = root.offsetWidth;
+            const h = root.offsetHeight;
+            requestAnimationFrame(() => {
+                el.style.left = (w - 120 - 24) + 'px';
+                el.style.top = (h - 120 - 24) + 'px';
+                startFreeRoam();
+                updatePetFreeButton();
+            });
+        }
+        function exitFreeMode() {
+            setPetFreeFlag(false);
+            stopFreeRoam();
+            const el = document.getElementById('pet');
+            if (!el) return;
+            const home = document.getElementById('pet-main');
+            const root = document.getElementById('main-container');
+            updatePetFreeButton();
+            // 无法定位容器时回退到即时归位
+            if (!home || !root) {
+                if (home && el.parentElement !== home) home.appendChild(el);
+                el.classList.remove('pinned');
+                delete el.dataset.pinned;
+                delete el.dataset.free;
+                el.style.left = '0px';
+                el.style.top = '0px';
+                clearPetPos();
+                return;
+            }
+            // 仍挂在 main-container 上，用 4.8s CSS transition 走回 pet-main 左上角
+            const rootRect = root.getBoundingClientRect();
+            const homeRect = home.getBoundingClientRect();
+            const scale = (rootRect.width / root.offsetWidth) || 1;
+            const targetX = (homeRect.left - rootRect.left) / scale;
+            const targetY = (homeRect.top - rootRect.top) / scale;
+            const curX = parseFloat(el.style.left) || 0;
+            el.classList.toggle('facing-left', targetX < curX);
+            el.style.left = targetX + 'px';
+            el.style.top = targetY + 'px';
+            let done = false;
+            const commit = () => {
+                if (done) return;
+                done = true;
+                el.removeEventListener('transitionend', onEnd);
+                if (el.parentElement !== home) home.appendChild(el);
+                el.classList.remove('pinned');
+                delete el.dataset.pinned;
+                delete el.dataset.free;
+                el.style.transition = 'none';
+                el.style.left = '0px';
+                el.style.top = '0px';
+                void el.offsetHeight;
+                el.style.transition = '';
+                clearPetPos();
+            };
+            const onEnd = (ev) => {
+                if (ev.target !== el) return;
+                if (ev.propertyName !== 'left' && ev.propertyName !== 'top') return;
+                commit();
+            };
+            el.addEventListener('transitionend', onEnd);
+            setTimeout(commit, 5200); // 兜底，防止 transitionend 未触发
+        }
+        function togglePetFree() {
+            if (isPetFree()) exitFreeMode(); else enterFreeMode();
+        }
+        function updatePetFreeButton() {
+            const btn = document.getElementById('pet-free-btn');
+            if (!btn) return;
+            const free = isPetFree();
+            btn.title = free ? '收回' : '放出宠物';
+            btn.innerHTML = `<i data-lucide="${free ? 'log-in' : 'log-out'}" class="w-4 h-4"></i>`;
+            if (window.lucide) lucide.createIcons();
+        }
+        // 视口尺寸变化时：自由模式下打断当前状态、重新挑点
+        window.addEventListener('resize', () => {
+            if (isPetFree() && petFsm.state && petFsm.state !== 'sleeping') fsmEnter('standing');
+        });
+
+        // 基础态：mood 1-2 → sad（屏蔽所有其他事件）；其余一律 idle 浮动
+        function moodToBaseState(m) { return m <= 2 ? 'sad' : 'idle'; }
+        // ===== 宠物状态调度器 =====
+        // dragged 最高（用户直接操作，始终可见）；其次 mood≤2 锁定 sad；
+        // 其余走普通优先级栈；最底为 idle。
+        const PET_STATE_PRIORITY = ['eating', 'celebrate', 'happy', 'focused', 'cheering', 'yawning', 'sleeping'];
+        const petActiveStates = new Set();
+        function recomputePetState() {
+            if (petActiveStates.has('dragged')) { setPetState('dragged'); return; }
+            if (petLoadSleep) { setPetState('sleeping'); return; }
+            if (loadPetMood() <= 2) { setPetState('sad'); return; }
+            for (const s of PET_STATE_PRIORITY) {
+                if (petActiveStates.has(s)) { setPetState(s); return; }
+            }
+            setPetState('idle');
+        }
+        function setPetPassive(state, on) {
+            if (on) petActiveStates.add(state); else petActiveStates.delete(state);
+            recomputePetState();
+        }
+        function applyMoodToBaseState() { recomputePetState(); }
+
+        // ===== 加载睡眠 & 唤醒序列 =====
+        // 注：petLoadSleep / _wakeInProgress 的 var 声明在 petIdleWatcher IIFE 前（为避免 TDZ）
+        const PET_LOAD_SLEEP_MS = 60 * 60 * 1000; // 1 小时
+        function touchLastActive() {
+            try { localStorage.setItem('pet.lastActiveTime', String(Date.now())); } catch(e) {}
+        }
+        function shouldLoadSleep() {
+            const t = parseInt(localStorage.getItem('pet.lastActiveTime'), 10);
+            if (!Number.isFinite(t)) return false;
+            return (Date.now() - t) > PET_LOAD_SLEEP_MS;
+        }
+        function enterLoadSleep() {
+            const el = document.getElementById('pet');
+            if (!el) return;
+            petLoadSleep = true;
+            const zz = document.getElementById('pet-zz');
+            if (zz) zz.classList.add('show');
+            if (typeof stopFreeRoam === 'function' && typeof isPetFree === 'function' && isPetFree()) {
+                stopFreeRoam();
+            }
+            try { recomputePetState(); } catch(e) { console.warn('[pet] enterLoadSleep recompute failed', e); }
+        }
+        function grantDailyWakeBonus() {
+            const today = new Date().toISOString().slice(0, 10);
+            if (localStorage.getItem('pet.lastWakeDate') === today) return;
+            localStorage.setItem('pet.lastWakeDate', today);
+            try { changePetMood(+1); } catch(e) {}
+        }
+        function playWakeSequence() {
+            if (!petLoadSleep || _wakeInProgress) return;
+            _wakeInProgress = true;
+            const el = document.getElementById('pet');
+            if (!el) { _wakeInProgress = false; petLoadSleep = false; return; }
+            const img = el.querySelector('.pet-img');
+            const zz  = document.getElementById('pet-zz');
+            const type = el.dataset.type || localStorage.getItem('pet.type') || 'cat';
+            // Step 1: 抖动 300ms
+            el.classList.add('waking-shake');
+            setTimeout(() => {
+                el.classList.remove('waking-shake');
+                // Step 2: 切到 idle + 弹出 + zzz 淡出（500ms）
+                PET_ALL_STATES_ARR.forEach(s => el.classList.remove('state-' + s));
+                el.classList.add('state-idle');
+                el.dataset.state = 'idle';
+                if (img) img.src = petImagePath(type, 'idle');
+                if (zz) zz.classList.remove('show');
+                el.classList.add('waking-pop');
+                setTimeout(() => {
+                    el.classList.remove('waking-pop');
+                    petLoadSleep = false;
+                    _wakeInProgress = false;
+                    petActiveStates.delete('sleeping');
+                    petActiveStates.delete('yawning');
+                    touchLastActive();
+                    grantDailyWakeBonus();
+                    try { recomputePetState(); } catch(e) {}
+                    if (typeof isPetFree === 'function' && isPetFree() && typeof startFreeRoam === 'function') {
+                        startFreeRoam();
+                    }
+                }, 500);
+            }, 300);
+        }
+
+        function triggerCelebrate(ms) {
+            petActiveStates.add('celebrate');
+            recomputePetState();
+            clearTimeout(window._petCelebrateTimer);
+            window._petCelebrateTimer = setTimeout(() => {
+                petActiveStates.delete('celebrate');
+                recomputePetState();
+            }, ms || 1500);
+        }
+
+        // FX：开心显示星星，难过显示乌云
+        const FX_STAR_SVG = '<svg class="fx-star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.5 6.5L21 9l-5 4.5L17.5 21 12 17l-5.5 4L8 13.5 3 9l6.5-.5z"/></svg>';
+        const FX_CLOUD_SVG = '<svg class="fx-cloud" viewBox="0 0 36 22" fill="currentColor"><path d="M9 18c-3 0-6-2-6-5.5S6 7 9 7c0.5-3 3.5-5 6.5-5s5.5 2 6 5c3 0 6 2 6 5.5S24.5 18 21.5 18z"/></svg>';
+        // 心情发生区间变化时短暂闪现 FX：显示 3 秒后慢慢淡出
+        function flashPetMoodFx() {
+            const fx = document.getElementById('pet-mood-fx');
+            if (!fx) return;
+            const m = loadPetMood();
+            if (m >= 4) {
+                fx.innerHTML = FX_STAR_SVG + FX_STAR_SVG + FX_STAR_SVG;
+            } else if (m <= 2) {
+                fx.innerHTML = FX_CLOUD_SVG + '<div class="fx-drop"></div><div class="fx-drop"></div><div class="fx-drop"></div>';
+            } else {
+                // 回到普通区间：不再展示装饰
+                fx.classList.remove('show');
+                clearTimeout(fx._clearTimer);
+                fx._clearTimer = setTimeout(() => { fx.innerHTML = ''; }, 800);
+                return;
+            }
+            clearTimeout(fx._clearTimer);
+            clearTimeout(fx._hideTimer);
+            fx.classList.add('show');
+            fx._hideTimer = setTimeout(() => {
+                fx.classList.remove('show');
+                fx._clearTimer = setTimeout(() => { fx.innerHTML = ''; }, 900);
+            }, 3000);
+        }
+
+        // 页面加载时计算回落 + 长期未打开惩罚
+        function settlePetMoodOnLoad() {
+            const now = Date.now();
+            const lastInteract = loadPetLastInteract();
+            const lastLoad = loadPetLastLoad();
+            let m = loadPetMood();
+
+            // 距上次互动超过2小时且 m>3 → 每满2小时 -1，回落至3
+            const TWO_H = 2 * 3600 * 1000;
+            const sinceInteract = now - lastInteract;
+            if (m > 3 && sinceInteract > TWO_H) {
+                const dropSteps = Math.floor(sinceInteract / TWO_H);
+                m = Math.max(3, m - dropSteps);
+            }
+
+            // 长期未打开页面
+            if (lastLoad != null) {
+                const sinceLoad = now - lastLoad;
+                if (sinceLoad > 24 * 3600 * 1000) m = Math.min(m, 1);
+                else if (sinceLoad > 8 * 3600 * 1000) m = Math.min(m, 2);
+            }
+            savePetMood(m);
+            localStorage.setItem('pet.lastLoad', String(now));
+        }
+
+        // 投喂限额
+        function tryFeedPet() {
+            const today = new Date().toISOString().slice(0, 10);
+            const date = localStorage.getItem('pet.feedDate');
+            let count = parseInt(localStorage.getItem('pet.feedCount'), 10);
+            if (date !== today || !Number.isFinite(count)) { count = 0; }
+            if (count >= 3) return false;
+            count += 1;
+            localStorage.setItem('pet.feedDate', today);
+            localStorage.setItem('pet.feedCount', String(count));
+            changePetMood(+1);
+            touchPetInteract();
+            return true;
+        }
+
+        // 显示/隐藏（hover 时显示）
+        let moodHideTimer = null;
+        function showPetMoodBar() {
+            const box = document.getElementById('pet-mood');
+            if (!box) return;
+            renderPetMood();
+            clearTimeout(moodHideTimer);
+            box.classList.add('show');
+        }
+        function hidePetMoodBar() {
+            const box = document.getElementById('pet-mood');
+            if (!box) return;
+            clearTimeout(moodHideTimer);
+            moodHideTimer = setTimeout(() => box.classList.remove('show'), 200);
+        }
+
+        // ===== 宠物选择引导（内嵌在宠物面板内） =====
+        function showPetOnboard() {
+            const box = document.getElementById('pet-onboard');
+            const main = document.getElementById('pet-main');
+            if (!box || !main) return;
+            box.querySelectorAll('.pet-onboard-svg').forEach(el => {
+                el.innerHTML = renderPet(el.dataset.type, 'idle');
+            });
+            document.getElementById('pet-onboard-name').value = '';
+            refreshOnboardGate();
+            main.classList.add('hidden');
+            box.classList.remove('hidden'); box.classList.add('flex');
+            setTimeout(() => document.getElementById('pet-onboard-name').focus(), 50);
+        }
+        function hidePetOnboard() {
+            const box = document.getElementById('pet-onboard');
+            const main = document.getElementById('pet-main');
+            if (!box || !main) return;
+            box.classList.add('hidden'); box.classList.remove('flex');
+            main.classList.remove('hidden');
+        }
+        function refreshOnboardGate() {
+            const name = document.getElementById('pet-onboard-name').value.trim();
+            const ready = !!name;
+            document.querySelectorAll('#pet-onboard .pet-onboard-card').forEach(c => { c.disabled = !ready; });
+            const hint = document.getElementById('pet-onboard-hint');
+            if (hint) hint.innerText = ready ? '选择你的伙伴' : '填写名字后选择动物';
+        }
+        function openPetResetConfirm() {
+            toggleModal('pet-reset-modal');
+        }
+        function executePetReset() {
+            ['pet.type','pet.name','pet.mood','pet.lastInteract','pet.lastLoad','pet.feedDate','pet.feedCount','pet.pos','pet.free','pet.lastActiveTime','pet.lastWakeDate']
+                .forEach(k => localStorage.removeItem(k));
+            stopFreeRoam();
+            const petEl = document.getElementById('pet');
+            if (petEl) {
+                petEl.classList.remove('pinned');
+                delete petEl.dataset.pinned;
+                delete petEl.dataset.free;
+                petEl.style.left = '0px';
+                petEl.style.top = '0px';
+            }
+            updatePetFreeButton();
+            renderPetMood();
+            toggleModal('pet-reset-modal');
+            showPetOnboard();
+        }
+
+        function confirmPetOnboard(type) {
+            const name = document.getElementById('pet-onboard-name').value.trim();
+            if (!name || !type) return;
+            localStorage.setItem('pet.type', type);
+            localStorage.setItem('pet.name', name);
+            applyPetTypeToUI(type);
+            hidePetOnboard();
+        }
+
+        // 初始化
+        (function initPet() {
+            const el = document.getElementById('pet');
+            if (!el) return;
+
+            // 单击宠物 → 随机播放一个小动作（1 秒）+ 刷新交互时间 + 显示心情条
+            const PET_SMALL_ACTIONS = ['happy', 'celebrate'];
+            let petClickTimer = null;
+            el.addEventListener('click', () => {
+                if (el._suppressClick) return; // 拖拽刚结束
+                if (petLoadSleep) { playWakeSequence(); return; } // 加载睡眠 → 点击唤醒
+                if (petClickTimer) return;
+                petClickTimer = setTimeout(() => {
+                    petClickTimer = null;
+                    touchPetInteract();
+                    showPetMoodBar();
+                    if (loadPetMood() <= 2) return; // 心情低时屏蔽事件
+                    const pick = PET_SMALL_ACTIONS[Math.floor(Math.random() * PET_SMALL_ACTIONS.length)];
+                    triggerOneShotState(pick, 1000);
+                }, 240);
+            });
+            // 双击 → 投喂；超出每日 3 次则摇头拒绝
+            el.addEventListener('dblclick', () => {
+                if (el._suppressClick) return;
+                if (petLoadSleep) return; // 加载睡眠：屏蔽喂食
+                if (petClickTimer) { clearTimeout(petClickTimer); petClickTimer = null; }
+                showPetMoodBar();
+                const ok = tryFeedPet();
+                if (ok) triggerFeedAnimation();
+                else triggerRefuseAnimation();
+            });
+            // hover 显示心情条；自由模式下若在睡觉则惊醒（加载睡眠不响应 hover）
+            el.addEventListener('mouseenter', () => {
+                if (petLoadSleep) return;
+                showPetMoodBar();
+                if (typeof isPetFree === 'function' && isPetFree() && petFsm.state === 'sleeping') {
+                    fsmWakeFromSleep();
+                }
+            });
+            el.addEventListener('mouseleave', hidePetMoodBar);
+
+            // 拖拽
+            attachPetDrag();
+            const savedPos = loadPetPos();
+            if (savedPos && !isPetFree()) pinPetTo(savedPos.x, savedPos.y);
+
+            // 自由活动模式：刷新后恢复
+            updatePetFreeButton();
+            if (isPetFree()) {
+                // 等下方 applyPetTypeToUI 完成后再启动
+                setTimeout(enterFreeMode, 0);
+            }
+
+            // 双击宠物头部位置（页面任意处）回到分栏：长按 1 秒可解除固定
+            el.addEventListener('contextmenu', e => {
+                if (el.dataset.pinned !== 'true') return;
+                e.preventDefault();
+                unpinPet();
+            });
+
+            // 引导交互：先填名字 → 解锁动物按钮 → 点击动物完成初始化
+            document.querySelectorAll('#pet-onboard .pet-onboard-card').forEach(c => {
+                c.addEventListener('click', () => {
+                    if (c.disabled) return;
+                    confirmPetOnboard(c.dataset.onboardPet);
+                });
+            });
+            document.getElementById('pet-onboard-name').addEventListener('input', refreshOnboardGate);
+
+            // 启动时结算心情 + 同步基础动画
+            settlePetMoodOnLoad();
+            renderPetMood();
+            applyMoodToBaseState();
+
+            // 首次启动或缺失数据 → 显示内嵌引导
+            const savedType = localStorage.getItem('pet.type');
+            const savedName = localStorage.getItem('pet.name');
+            if (!savedType || !savedName) {
+                showPetOnboard();
+            } else {
+                applyPetTypeToUI(savedType);
+                hidePetOnboard();
+            }
+        })();
+
+        // 宠物朝向鼠标：静止时跟随鼠标 X 方向翻转
+        (function petFaceMouse() {
+            let pendingX = null;
+            let rafId = null;
+            function apply() {
+                rafId = null;
+                const el = document.getElementById('pet');
+                if (!el || pendingX === null) return;
+                if (petLoadSleep) return;
+                if (petActiveStates && petActiveStates.has('dragged')) return;
+                if (typeof petFsm !== 'undefined' && petFsm.state === 'walking') return;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0) return;
+                const cx = r.left + r.width / 2;
+                const dx = pendingX - cx;
+                if (Math.abs(dx) < 6) return; // 死区，避免紧贴中线时反复翻转
+                el.classList.toggle('facing-left', dx < 0);
+            }
+            document.addEventListener('mousemove', (e) => {
+                pendingX = e.clientX;
+                if (rafId === null) rafId = requestAnimationFrame(apply);
+            }, { passive: true });
+        })();
+
+        window.onload = () => {
+            renderGroupTabs();
+            renderTodos();
+            applyPanelVisibility(); // 恢复面板开关状态，内部会触发 calcAndRenderBookmarks
+            // ResizeObserver：快捷方式面板宽度变化时重新计算书签布局
+            const shortcutsPanelEl = document.getElementById('panel-shortcuts');
+            if (shortcutsPanelEl && window.ResizeObserver) {
+                const ro = new ResizeObserver(() => calcAndRenderBookmarks());
+                ro.observe(shortcutsPanelEl);
+            }
+            const mode = localStorage.getItem('workbench_bg_mode_v8') || 'url';
+            setActiveBgModeUI(mode);
+
+            const savedUrl = localStorage.getItem('workbench_bg_url_v8');
+            if(savedUrl) document.getElementById('bg-url').value = savedUrl;
+
+            if(mode === 'local') {
+                const savedLocal = localStorage.getItem('workbench_bg_local_v8');
+                if(savedLocal) applyBgImageUrl(savedLocal);
+            } else if (mode === 'presets') {
+                const savedPreset = localStorage.getItem('workbench_bg_preset_v8');
+                if(savedPreset) applyBgImageUrl(savedPreset);
+            } else {
+                if(savedUrl) applyBgImageUrl(savedUrl);
+            }
+
+            // 加载睡眠检测：放在 onload 末尾 + try/catch 包裹，确保即使抛错也不影响面板渲染
+            try {
+                if (localStorage.getItem('pet.type') && localStorage.getItem('pet.name') && shouldLoadSleep()) {
+                    enterLoadSleep();
+                }
+            } catch(e) { console.warn('[pet] load-sleep init failed', e); }
+        };
+    </script>
+</body>
+</html>
